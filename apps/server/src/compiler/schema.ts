@@ -39,6 +39,8 @@ const ListFieldRef = z.object({
 const INNER_KINDS = [
   "navigate",
   "switchTab",
+  "openTab",
+  "closeTab",
   "click",
   "fill",
   "press",
@@ -53,10 +55,11 @@ const INNER_KINDS = [
 const stepFields = {
   id: z.string(),
   basedOn: z.array(z.string()).default([]).describe("Recorded step ids this step reproduces; empty for new steps"),
-  tab: z.string().nullish().describe("Tab role: the tab to act in, or for switchTab the tab to switch to"),
+  tab: z.string().nullish().describe("Tab role: the tab to act in, or for switchTab/openTab/closeTab the tab concerned"),
   url: z.string().nullish(),
   target: TargetRef.nullish(),
   until: ConditionRef.nullish().describe("For click: what should appear afterwards; the click is retried if it doesn't"),
+  opensTab: z.string().nullish().describe("For click: the click opens a new tab; continue in it as this tab role"),
   value: z.string().nullish(),
   key: z.string().nullish(),
   textIncludes: z.string().nullish(),
@@ -85,7 +88,12 @@ export type TopStep = z.infer<typeof TopStep>;
 export const CompiledWorkflow = z.object({
   name: z.string().describe("Short name for the automation"),
   summary: z.string().describe("Two or three sentences, for the user, on what the automation will do"),
-  tabs: z.array(z.object({ role: z.string(), startUrl: z.string() })),
+  tabs: z.array(
+    z.object({
+      role: z.string(),
+      startUrl: z.string().nullish().describe("Omit for tabs that only come from openTab or a click's opensTab"),
+    }),
+  ),
   closePopups: z
     .boolean()
     .default(false)

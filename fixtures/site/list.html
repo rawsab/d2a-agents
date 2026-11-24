@@ -18,6 +18,8 @@
       <li class="item"><a class="title" href="/watch?v=vid4">Video Four</a><button class="share">Share</button></li>
     </ul>
 
+    <p><a id="open-downloader" href="/form.html" target="_blank">Open downloader</a></p>
+
     <dialog id="share-dialog">
       <p>Share this video</p>
       <input id="share-url" readonly size="40" />
@@ -29,6 +31,10 @@
       const dialog = document.getElementById("share-dialog");
       const shareUrl = document.getElementById("share-url");
       const params = new URLSearchParams(location.search);
+      // ?dlhost=<host> points "Open downloader" at another origin (e.g. localhost vs 127.0.0.1).
+      if (params.get("dlhost")) {
+        document.getElementById("open-downloader").href = `http://${params.get("dlhost")}:${location.port}/form.html`;
+      }
       // ?hidden=<ms> keeps the playlist invisible for a while, like content rendered after load.
       const hidden = Number(params.get("hidden") ?? 0);
       if (hidden) {

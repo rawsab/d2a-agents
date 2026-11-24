@@ -8,7 +8,7 @@ export type ExecRequest =
   | { type: "exec/readValue"; locator: Locator }
   | { type: "exec/setValue"; locator: Locator; value: string }
   | { type: "exec/focus"; locator: Locator }
-  | { type: "exec/probe"; locator: Locator }
+  | { type: "exec/probe"; locator: Locator; textIncludes?: string }
   | { type: "exec/extract"; locator: Locator; attr?: string }
   | { type: "exec/extractList"; container?: Locator; itemSelector: string; fields: Record<string, ListField> }
   | { type: "exec/lastCopied" }
@@ -177,7 +177,10 @@ export function handleExec(req: ExecRequest, lastCopied: () => { value: string; 
       return null;
     case "exec/probe":
       try {
-        return { found: true, text: textOf(resolve(req.locator).el) };
+        const { el } = resolve(req.locator);
+        const textMatched =
+          req.textIncludes === undefined ? undefined : ((el as HTMLElement).innerText ?? el.textContent ?? "").includes(req.textIncludes);
+        return { found: true, text: textOf(el), textMatched };
       } catch (err) {
         return { found: false, error: (err as Error).message };
       }

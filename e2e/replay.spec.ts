@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { Step, Workflow } from "@d2a/shared";
 import { startFixtureServer } from "../fixtures/server.js";
 import { fixtureWorkflow } from "../fixtures/workflow.js";
 import { API, launch, runWorkflow, until } from "./harness.js";
@@ -47,6 +48,49 @@ test("closePopups closes the ad tabs a page opens and the run carries on", async
   expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
   expect(run.log.filter((l) => l.message.startsWith("closed a tab the page opened (localhost"))).toHaveLength(4);
   expect(env.context.pages().some((p) => p.url().includes("/ad.html"))).toBe(false);
+});
+
+/** The fixture workflow, reaching the downloader through a new tab each time instead of a fixed tab. */
+function viaNewTab(how: "click" | "openTab", playlistQuery = ""): Workflow {
+  const wf = fixtureWorkflow(fixture.origin, playlistQuery);
+  const loop = wf.steps[2];
+  if (loop.kind !== "forEach") throw new Error("expected forEach");
+  const open: Step =
+    how === "click"
+      ? {
+          id: "open",
+          kind: "click",
+          target: { description: "Open downloader link", fingerprint: { role: "link", name: "Open downloader" } },
+          opensTab: "downloader",
+        }
+      : { id: "open", kind: "openTab", role: "downloader", url: `${fixture.origin}/form.html` };
+  // Replace "switch to downloader", and close the tab at the end of each item.
+  loop.body = loop.body.flatMap((s) => (s.kind === "switchTab" && s.role === "downloader" ? [open] : [s]));
+  loop.body.push({ id: "close", kind: "closeTab", role: "downloader" });
+  return { ...wf, tabs: { playlist: wf.tabs.playlist, downloader: {} } };
+}
+
+const downloaderTabs = () => env.context.pages().filter((p) => p.url().includes("/form.html"));
+
+test("a click that opens a new tab continues there, and closeTab closes it", async () => {
+  const run = await runWorkflow(viaNewTab("click"), { delayMs: 0 });
+  expect(run.status).toBe("done");
+  expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
+  expect(downloaderTabs()).toHaveLength(0);
+});
+
+test("with closePopups on, the tab a click is expected to open is kept even on another site", async () => {
+  const run = await runWorkflow({ ...viaNewTab("click", "?dlhost=localhost"), closePopups: true }, { delayMs: 0 });
+  expect(run.status).toBe("done");
+  expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
+  expect(run.log.some((l) => l.message.startsWith("closed a tab the page opened"))).toBe(false);
+});
+
+test("openTab opens a fresh tab for each item", async () => {
+  const run = await runWorkflow(viaNewTab("openTab"), { delayMs: 0 });
+  expect(run.status).toBe("done");
+  expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
+  expect(downloaderTabs()).toHaveLength(0);
 });
 
 test("a dry run only does the first item", async () => {

@@ -9,13 +9,14 @@ type Env = Awaited<ReturnType<typeof launch>>;
 export async function recordFixtureDemo(
   env: Env,
   origin: string,
-  opts: { withNoise?: boolean; withAds?: boolean } = {},
+  /** viaLink: reach the downloader with "Open downloader" (a new tab) instead of an open tab. */
+  opts: { withNoise?: boolean; withAds?: boolean; viaLink?: boolean } = {},
 ): Promise<string> {
   const { context, panel } = env;
   const list = await context.newPage();
   await list.goto(`${origin}/list.html`);
-  const form = await context.newPage();
-  await form.goto(`${origin}/form.html${opts.withAds ? "?ads=1" : ""}`);
+  let form = opts.viaLink ? undefined : await context.newPage();
+  await form?.goto(`${origin}/form.html${opts.withAds ? "?ads=1" : ""}`);
 
   await list.bringToFront();
   const rec = await panel.evaluate(() => chrome.runtime.sendMessage({ type: "startRecording", name: "fixture demo" }));
@@ -27,6 +28,13 @@ export async function recordFixtureDemo(
   await list.getByRole("button", { name: "Share" }).nth(1).click();
   await list.getByRole("button", { name: "Copy" }).click();
   await list.waitForTimeout(900);
+  if (!form) {
+    const opened = context.waitForEvent("page");
+    await list.getByRole("link", { name: "Open downloader" }).click();
+    form = await opened;
+    await form.waitForLoadState();
+    await form.waitForTimeout(300);
+  }
   await form.bringToFront();
   await form.getByLabel("Paste link").click();
   await form.keyboard.press("ControlOrMeta+V");
@@ -37,7 +45,7 @@ export async function recordFixtureDemo(
     const page = await ad;
     await page.waitForLoadState();
     await page.close();
-    await form.bringToFront();
+    await form!.bringToFront();
   }
   await form.getByRole("status").getByText("Queued").waitFor();
   await form.waitForTimeout(1000);

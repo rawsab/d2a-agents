@@ -18,10 +18,13 @@ export const Command = z.discriminatedUnion("op", [
   z.object({ op: z.literal("activateTab"), ...tab }),
   z.object({ op: z.literal("tabInfo"), ...tab }),
   z.object({ op: z.literal("navigate"), ...tab, url: z.string() }),
-  z.object({ op: z.literal("click"), ...tab, locator: Locator }),
+  /** With expectNewTab, waits for the tab the click opens (it is never treated as a popup). */
+  z.object({ op: z.literal("click"), ...tab, locator: Locator, expectNewTab: z.boolean().optional() }),
+  z.object({ op: z.literal("closeTab"), ...tab }),
   z.object({ op: z.literal("fill"), ...tab, locator: Locator, value: z.string() }),
   z.object({ op: z.literal("press"), ...tab, key: z.string(), locator: Locator.optional() }),
-  z.object({ op: z.literal("probe"), ...tab, locator: Locator }),
+  /** With textIncludes, also checks the element's full text contains it (done in the page; probe text is truncated). */
+  z.object({ op: z.literal("probe"), ...tab, locator: Locator, textIncludes: z.string().optional() }),
   z.object({ op: z.literal("extract"), ...tab, locator: Locator, attr: z.string().optional() }),
   z.object({
     op: z.literal("extractList"),
@@ -54,10 +57,11 @@ export type CommandResults = {
   activateTab: null;
   tabInfo: { url: string; title: string };
   navigate: null;
-  click: null;
+  click: { newTabId: number | null };
+  closeTab: null;
   fill: null;
   press: null;
-  probe: { found: boolean; text?: string; error?: string };
+  probe: { found: boolean; text?: string; textMatched?: boolean; error?: string };
   extract: string;
   extractList: ListItem[];
   lastCopied: { value: string; ts: number } | null;

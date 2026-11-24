@@ -129,6 +129,42 @@ describe("toWorkflow", () => {
     expect(copy).not.toHaveProperty("until"); // the Copy click opened nothing
   });
 
+  it("converts tab steps and checks that opensTab names a declared tab", () => {
+    const answer = goodAnswer();
+    answer.tabs.push({ role: "result", startUrl: null });
+    answer.steps.push(
+      top({ id: "w4", kind: "click", target: ref({ description: "Download", fromStep: "s7" }), opensTab: "result" }),
+      top({ id: "w5", kind: "closeTab", tab: "result" }),
+      top({ id: "w6", kind: "openTab", tab: "downloader", url: FORM }),
+    );
+    const ok = toWorkflow(answer, { steps, recorded: recording.events }, meta);
+    expect(ok.errors).toEqual([]);
+    expect(ok.workflow.tabs.result).toEqual({});
+    expect(ok.workflow.steps.slice(3)).toMatchObject([
+      { kind: "click", opensTab: "result" },
+      { kind: "closeTab", role: "result" },
+      { kind: "openTab", role: "downloader", url: FORM },
+    ]);
+
+    answer.steps[3].opensTab = "nowhere";
+    expect(toWorkflow(answer, { steps, recorded: recording.events }, meta).errors).toEqual([
+      'step w4 (click): opensTab "nowhere" is not declared in tabs',
+    ]);
+  });
+
+  it("waits for text anywhere on the page when waitFor has only textIncludes", () => {
+    const answer = goodAnswer();
+    answer.steps[2].body!.push(inner({ id: "w3.8", kind: "waitFor", textIncludes: "Queued {{link}}" }));
+    const { workflow, errors } = toWorkflow(answer, { steps, recorded: recording.events }, meta);
+    expect(errors).toEqual([]);
+    const loop = workflow.steps[2];
+    expect(loop.kind === "forEach" && loop.body.at(-1)).toMatchObject({
+      kind: "waitFor",
+      textIncludes: "Queued {{link}}",
+      target: { fingerprint: { css: "body" } },
+    });
+  });
+
   it("picks elements from a step's page inventory", () => {
     const answer = goodAnswer();
     answer.steps.splice(2, 1, top({ id: "w3", kind: "click", target: ref({ description: "Video 4", fromStep: "s3", inventoryIndex: 3 }) }));

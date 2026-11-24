@@ -90,9 +90,13 @@ function need<T>(value: T | null | undefined, field: string, where: string, ctx:
   return value;
 }
 
+/** Text without a target is looked for anywhere on the page. */
+const WHOLE_PAGE: Target = { description: "the page", fingerprint: { css: "body" } };
+
 function convertCondition(c: NonNullable<InnerStep["until"]>, where: string, loopItem: string | undefined, scope: Scope, ctx: Ctx) {
   const out: Condition = {};
   if (c.target) out.target = resolveTarget(c.target, where, loopItem, ctx);
+  else if (c.textIncludes) out.target = WHOLE_PAGE;
   if (c.textIncludes) {
     checkTemplate(c.textIncludes, where, scope, ctx);
     out.textIncludes = c.textIncludes;
@@ -125,10 +129,20 @@ function convertStep(s: InnerStep | TopStep, scope: Scope, loopItem: string | un
       if (s.url) checkTemplate(s.url, where, scope, ctx);
       return role === undefined ? undefined : { ...base, kind: "switchTab", role, ...(s.url ? { url: s.url } : {}) };
     }
+    case "openTab": {
+      const role = need(s.tab, "tab", where, ctx);
+      const url = template(s.url, "url");
+      return role === undefined || url === undefined ? undefined : { ...base, kind: "openTab", role, url };
+    }
+    case "closeTab": {
+      const role = need(s.tab, "tab", where, ctx);
+      return role === undefined ? undefined : { ...base, kind: "closeTab", role };
+    }
     case "click": {
       const t = target(s.target);
       const until = s.until ? convertCondition(s.until, where, loopItem, scope, ctx) : undefined;
-      return t && { ...base, kind: "click", target: t, ...(until ? { until } : {}) };
+      if (s.opensTab && !ctx.tabs.has(s.opensTab)) ctx.errors.push(`${where}: opensTab "${s.opensTab}" is not declared in tabs`);
+      return t && { ...base, kind: "click", target: t, ...(until ? { until } : {}), ...(s.opensTab ? { opensTab: s.opensTab } : {}) };
     }
     case "fill": {
       const t = target(s.target);
@@ -141,8 +155,8 @@ function convertStep(s: InnerStep | TopStep, scope: Scope, loopItem: string | un
       return key === undefined ? undefined : { ...base, kind: "press", key, ...(t ? { target: t } : {}) };
     }
     case "waitFor": {
-      if (!s.target && !s.urlMatches) ctx.errors.push(`${where}: needs a target or urlMatches`);
-      const t = s.target ? resolveTarget(s.target, where, loopItem, ctx) : undefined;
+      if (!s.target && !s.textIncludes && !s.urlMatches) ctx.errors.push(`${where}: needs a target, textIncludes or urlMatches`);
+      const t = s.target ? resolveTarget(s.target, where, loopItem, ctx) : s.textIncludes ? WHOLE_PAGE : undefined;
       if (s.textIncludes) checkTemplate(s.textIncludes, where, scope, ctx);
       return {
         ...base,
@@ -210,11 +224,11 @@ function addClickRetries(compiled: (InnerStep | TopStep)[], converted: Step[], c
     const step = converted[i];
     const next = converted[i + 1];
     if (step?.kind === "forEach" && source.kind === "forEach") addClickRetries((source as TopStep).body ?? [], step.body, ctx);
-    if (step?.kind !== "click" || step.until || !next) return;
+    if (step?.kind !== "click" || step.until || step.opensTab || !next) return;
     const recordedId = source.basedOn[0] ?? source.target?.fromStep;
     const effect = recordedId ? ctx.steps.get(recordedId)?.effect : undefined;
     if (!effect || !(effect.opened.length || effect.expandedChanged)) return;
-    if ((next.tab ?? step.tab) !== step.tab || next.kind === "switchTab" || next.kind === "navigate") return;
+    if ((next.tab ?? step.tab) !== step.tab || ["switchTab", "openTab", "closeTab", "navigate"].includes(next.kind)) return;
     const target = "target" in next ? next.target : undefined;
     if (target) step.until = { target };
   });
@@ -237,8 +251,8 @@ export function toWorkflow(
   };
   const tabs: Workflow["tabs"] = {};
   for (const t of compiled.tabs) {
-    if (!/^https?:\/\//.test(t.startUrl)) ctx.errors.push(`tab "${t.role}": startUrl must be an absolute http(s) URL`);
-    tabs[t.role] = { startUrl: t.startUrl };
+    if (t.startUrl != null && !/^https?:\/\//.test(t.startUrl)) ctx.errors.push(`tab "${t.role}": startUrl must be an absolute http(s) URL`);
+    tabs[t.role] = t.startUrl != null ? { startUrl: t.startUrl } : {};
   }
   if (compiled.tabs.length === 0) ctx.errors.push("declare at least one tab");
   const scope: Scope = { vars: new Set(), items: new Map() };

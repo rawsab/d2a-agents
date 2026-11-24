@@ -2,6 +2,7 @@ import type { Command, CommandResults, Locator } from "@d2a/shared";
 import { injectInto } from "./inject.js";
 
 const LOAD_TIMEOUT_MS = 20_000;
+const NEW_TAB_TIMEOUT_MS = 10_000;
 const SETTLE_MS = 300;
 
 /** CDP key definitions for keys a workflow can press. */
@@ -36,6 +37,8 @@ export class Executor {
   /** Popup tabs whose URL isn't known yet, mapped to their opener. */
   private pendingPopups = new Map<number, number>();
   private closedPopups: string[] = [];
+  /** Clicks waiting for the tab they open, by opener tab. */
+  private newTabWaiters = new Map<number, (tabId: number) => void>();
 
   constructor() {
     chrome.debugger.onDetach.addListener(({ tabId }) => {
@@ -43,7 +46,15 @@ export class Executor {
     });
     chrome.tabs.onCreated.addListener((tab) => {
       // Only tabs a page opened (window.open, target=_blank) have an opener; ours from openTab don't.
-      if (!this.popupPolicy || tab.id === undefined || tab.openerTabId === undefined) return;
+      if (tab.id === undefined || tab.openerTabId === undefined) return;
+      const waiter = this.newTabWaiters.get(tab.openerTabId);
+      if (waiter) {
+        // A click said it would open this tab: hand it over instead of treating it as a popup.
+        this.newTabWaiters.delete(tab.openerTabId);
+        waiter(tab.id);
+        return;
+      }
+      if (!this.popupPolicy) return;
       this.pendingPopups.set(tab.id, tab.openerTabId);
       this.checkPopup(tab.id, tab.pendingUrl ?? tab.url);
     });
@@ -91,9 +102,22 @@ export class Executor {
         return null;
       case "click": {
         const { x, y } = await this.content<{ x: number; y: number }>(cmd.tabId, { type: "exec/locate", locator: cmd.locator });
-        await this.mouseClick(cmd.tabId, x, y);
-        return null;
+        // Listen before clicking, so a tab that opens instantly isn't missed.
+        const newTab = cmd.expectNewTab ? this.waitForNewTab(cmd.tabId) : undefined;
+        try {
+          await this.mouseClick(cmd.tabId, x, y);
+        } catch (err) {
+          this.newTabWaiters.delete(cmd.tabId);
+          throw err;
+        }
+        if (!newTab) return { newTabId: null };
+        const newTabId = await newTab;
+        await waitForLoad(newTabId);
+        return { newTabId };
       }
+      case "closeTab":
+        await chrome.tabs.remove(cmd.tabId);
+        return null;
       case "fill":
         await this.fill(cmd.tabId, cmd.locator, cmd.value);
         return null;
@@ -102,7 +126,7 @@ export class Executor {
         await this.key(cmd.tabId, cmd.key);
         return null;
       case "probe":
-        return this.content(cmd.tabId, { type: "exec/probe", locator: cmd.locator });
+        return this.content(cmd.tabId, { type: "exec/probe", locator: cmd.locator, textIncludes: cmd.textIncludes });
       case "extract":
         return this.content(cmd.tabId, { type: "exec/extract", locator: cmd.locator, attr: cmd.attr });
       case "extractList":
@@ -128,6 +152,19 @@ export class Executor {
       case "snapshot":
         return this.content(cmd.tabId, { type: "exec/snapshot" });
     }
+  }
+
+  private waitForNewTab(openerTabId: number): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.newTabWaiters.delete(openerTabId);
+        reject(new Error("the click did not open a new tab"));
+      }, NEW_TAB_TIMEOUT_MS);
+      this.newTabWaiters.set(openerTabId, (tabId) => {
+        clearTimeout(timer);
+        resolve(tabId);
+      });
+    });
   }
 
   private async fill(tabId: number, locator: Locator, value: string) {

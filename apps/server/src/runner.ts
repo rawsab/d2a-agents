@@ -197,11 +197,18 @@ export class Runner {
     this.currentRole = role;
   }
 
-  private async act(tabId: number, command: Command) {
+  private async act(tabId: number, command: Command): Promise<unknown> {
     this.lastActionAt = Date.now();
-    await this.browser.execute(command);
+    const result = await this.browser.execute(command);
     const { closedPopups } = await this.exec({ op: "settle", tabId });
     for (const host of closedPopups) this.log("info", `closed a tab the page opened (${host})`);
+    return result;
+  }
+
+  /** Makes a tab the given role's tab and continues there. */
+  private adoptTab(role: string, tabId: number) {
+    this.tabs.set(role, tabId);
+    this.currentRole = role;
   }
 
   private async step(step: Step): Promise<void> {
@@ -211,6 +218,18 @@ export class Runner {
     switch (step.kind) {
       case "switchTab":
         return this.switchTab(step.role, step.url);
+      case "openTab": {
+        const { tabId } = await this.exec({ op: "openTab", url: this.render(step.url) });
+        return this.adoptTab(step.role, tabId);
+      }
+      case "closeTab": {
+        const tabId = this.tabs.get(step.role);
+        if (tabId === undefined) return this.log("warn", `no ${step.role} tab to close`, step.id);
+        this.tabs.delete(step.role);
+        await this.exec({ op: "closeTab", tabId }).catch(() => {}); // already closed is fine
+        if (this.currentRole === step.role) this.currentRole = this.tabs.keys().next().value ?? this.currentRole;
+        return;
+      }
       case "navigate": {
         const tabId = await this.tabFor(step);
         this.lastActionAt = Date.now();
@@ -220,9 +239,12 @@ export class Runner {
         const tabId = await this.tabFor(step);
         const click = async () => {
           await this.waitForTarget(tabId, step.target);
-          await this.act(tabId, { op: "click", tabId, locator: this.locator(step.target) });
+          const locator = this.locator(step.target);
+          const result = (await this.act(tabId, { op: "click", tabId, locator, expectNewTab: Boolean(step.opensTab) })) as CommandResults["click"];
+          if (step.opensTab && result.newTabId !== null) this.adoptTab(step.opensTab, result.newTabId);
         };
-        if (!step.until) return click();
+        // A click that opens a tab is confirmed by the tab itself; `until` would look in the wrong tab.
+        if (!step.until || step.opensTab) return click();
         let detail = "";
         for (let attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++) {
           // Re-check first so a slow-but-successful click is never repeated.
@@ -238,12 +260,14 @@ export class Runner {
       case "fill": {
         const tabId = await this.tabFor(step);
         await this.waitForTarget(tabId, step.target);
-        return this.act(tabId, { op: "fill", tabId, locator: this.locator(step.target), value: this.render(step.value) });
+        await this.act(tabId, { op: "fill", tabId, locator: this.locator(step.target), value: this.render(step.value) });
+        return;
       }
       case "press": {
         const tabId = await this.tabFor(step);
         if (step.target) await this.waitForTarget(tabId, step.target);
-        return this.act(tabId, { op: "press", tabId, key: step.key, locator: step.target && this.locator(step.target) });
+        await this.act(tabId, { op: "press", tabId, key: step.key, locator: step.target && this.locator(step.target) });
+        return;
       }
       case "waitFor": {
         const tabId = await this.tabFor(step);
@@ -292,8 +316,8 @@ export class Runner {
   private async check(tabId: number, cond: Condition): Promise<{ met: boolean; detail: string }> {
     if (cond.target) {
       const text = cond.textIncludes && this.render(cond.textIncludes);
-      const probe = await this.exec({ op: "probe", tabId, locator: this.locator(cond.target) });
-      if (probe.found && (!text || probe.text?.includes(text))) return { met: true, detail: "" };
+      const probe = await this.exec({ op: "probe", tabId, locator: this.locator(cond.target), textIncludes: text || undefined });
+      if (probe.found && (!text || probe.textMatched)) return { met: true, detail: "" };
       return { met: false, detail: probe.found ? `text was "${probe.text?.slice(0, 80)}"` : (probe.error ?? "") };
     }
     if (cond.urlMatches) {

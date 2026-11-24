@@ -37,3 +37,34 @@ test("Claude compiles the recorded demonstration into a loop over the playlist, 
     await fixture.close();
   }
 });
+
+test("a recording that opened the downloader in a new tab compiles to opensTab, and runs", async () => {
+  test.setTimeout(300_000);
+  const fixture = await startFixtureServer();
+  const env = await launch();
+  try {
+    const recordingId = await recordFixtureDemo(env, fixture.origin, { viaLink: true });
+    const res = await fetch(`${API}/recordings/${recordingId}/compile`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ instruction: "Repeat this for every video in the playlist" }),
+    });
+    const body = (await res.json()) as { workflow: Workflow; rounds: number; corrections: string[][]; error?: string };
+    expect(res.ok, body.error).toBe(true);
+    console.log(`corrections: ${JSON.stringify(body.corrections)}`);
+    console.log(JSON.stringify(body.workflow, null, 2));
+    const loop = body.workflow.steps.find((s) => s.kind === "forEach");
+    expect(loop?.kind === "forEach" && loop.body.some((s) => s.kind === "click" && s.opensTab)).toBe(true);
+
+    fixture.log.length = 0;
+    const run = await runWorkflow(body.workflow, { delayMs: 0 }, undefined, 150_000);
+    console.log(run.log.map((l) => `${l.level}: ${l.message}`).join("\n"));
+    expect(run.status).toBe("done");
+    expect(fixture.log).toEqual([1, 2, 3, 4].map((i) => `${fixture.origin}/share/vid${i}`));
+    const leftOpen = env.context.pages().filter((p) => p.url().includes("/form.html")).length;
+    console.log(`downloader tabs left open: ${leftOpen}`);
+  } finally {
+    await env.close();
+    await fixture.close();
+  }
+});

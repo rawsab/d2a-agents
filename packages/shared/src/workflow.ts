@@ -29,7 +29,9 @@ export type ListField = z.infer<typeof ListField>;
 export type Step =
   | { id: string; tab?: string; kind: "navigate"; url: string }
   | { id: string; tab?: string; kind: "switchTab"; role: string; url?: string }
-  | { id: string; tab?: string; kind: "click"; target: Target; until?: Condition }
+  | { id: string; tab?: string; kind: "openTab"; role: string; url: string }
+  | { id: string; tab?: string; kind: "closeTab"; role: string }
+  | { id: string; tab?: string; kind: "click"; target: Target; until?: Condition; opensTab?: string }
   | { id: string; tab?: string; kind: "fill"; target: Target; value: string }
   | { id: string; tab?: string; kind: "press"; key: string; target?: Target }
   | { id: string; tab?: string; kind: "waitFor"; target?: Target; textIncludes?: string; urlMatches?: string; timeoutMs?: number }
@@ -43,12 +45,17 @@ export const Step: z.ZodType<Step> = z.lazy(() =>
   z.discriminatedUnion("kind", [
     z.object({ ...stepBase, kind: z.literal("navigate"), url: Expr }),
     z.object({ ...stepBase, kind: z.literal("switchTab"), role: TabRole, url: Expr.optional() }),
+    /** Opens a new tab at url as `role`'s tab (even if the role already has one) and switches to it. */
+    z.object({ ...stepBase, kind: z.literal("openTab"), role: TabRole, url: Expr }),
+    z.object({ ...stepBase, kind: z.literal("closeTab"), role: TabRole }),
     z.object({
       ...stepBase,
       kind: z.literal("click"),
       target: Target,
       /** Expected result; if it doesn't appear, the click is retried (pages often ignore clicks while loading). */
       until: Condition.optional(),
+      /** The click opens a new tab: wait for it and continue there as this tab role. */
+      opensTab: TabRole.optional(),
     }),
     z.object({ ...stepBase, kind: z.literal("fill"), target: Target, value: Expr }),
     z.object({ ...stepBase, kind: z.literal("press"), key: z.string(), target: Target.optional() }),
@@ -107,8 +114,12 @@ export function describeWorkflowStep(step: Step): string {
       return `go to ${step.url}`;
     case "switchTab":
       return `switch to ${step.role} tab`;
+    case "openTab":
+      return `open a new ${step.role} tab at ${step.url}`;
+    case "closeTab":
+      return `close the ${step.role} tab`;
     case "click":
-      return `click ${step.target.description}`;
+      return `click ${step.target.description}${step.opensTab ? ` (opens the ${step.opensTab} tab)` : ""}`;
     case "fill":
       return `fill ${step.target.description} with ${step.value}`;
     case "press":
