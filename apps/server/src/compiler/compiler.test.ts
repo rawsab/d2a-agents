@@ -1,8 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
-import { type RawEvent, type RecordedEvent, type Recording, mergeEvents } from "@d2a/shared";
+import { type RawEvent, type RecordedEvent, type Recording, checkWorkflow, mergeEvents } from "@d2a/shared";
 import { type CompilerModel, type ModelReply, type PreviewResult, compile, refine } from "./index.js";
-import { toWorkflow } from "./convert.js";
+import { toCompiled, toWorkflow } from "./convert.js";
 import { buildContext } from "./prompt.js";
 import type { CompiledWorkflow, InnerStep, TargetRef, TopStep } from "./schema.js";
 
@@ -187,6 +187,56 @@ describe("toWorkflow", () => {
       "step w3.6 (fill): {{nope}} refers to an undefined variable",
       'step w4 (click): target "stray" has withinItem but is not inside a forEach',
       'step w5 (navigate): tab "elsewhere" is not declared in tabs',
+    ]);
+  });
+});
+
+describe("toCompiled", () => {
+  it("round-trips a compiled workflow, keeping where each step and element came from", () => {
+    const { workflow } = toWorkflow(goodAnswer(), { steps, recorded: recording.events }, meta);
+    const loop = workflow.steps[2];
+    if (loop.kind !== "forEach") throw new Error("expected forEach");
+    expect(loop.body[1]).toMatchObject({ basedOn: ["s3"], target: { source: { step: "s3" } } });
+    const again = toWorkflow(toCompiled(workflow), { steps, recorded: recording.events }, meta);
+    expect(again.errors).toEqual([]);
+    expect(again.workflow.steps).toEqual(workflow.steps);
+    expect(again.workflow.tabs).toEqual(workflow.tabs);
+  });
+
+  it("keeps a hand-edited target that has no recorded source", () => {
+    const { workflow } = toWorkflow(goodAnswer(), { steps, recorded: recording.events }, meta);
+    const loop = workflow.steps[2];
+    if (loop.kind !== "forEach" || loop.body[6].kind !== "click") throw new Error("unexpected shape");
+    loop.body[6].target = { description: "Get it button", fingerprint: { role: "button", name: "Get it" } };
+    const again = toWorkflow(toCompiled(workflow), { steps, recorded: recording.events }, meta);
+    const click = again.workflow.steps[2].kind === "forEach" ? again.workflow.steps[2].body[6] : undefined;
+    expect(click).toMatchObject({ target: { description: "Get it button", fingerprint: { role: "button", name: "Get it" } } });
+  });
+});
+
+describe("checkWorkflow", () => {
+  it("finds nothing wrong with a good workflow", () => {
+    expect(checkWorkflow(toWorkflow(goodAnswer(), { steps, recorded: recording.events }, meta).workflow)).toEqual([]);
+  });
+
+  it("reports undeclared tabs, unset variables, unknown item fields and lists, and misplaced item targets", () => {
+    const { workflow } = toWorkflow(goodAnswer(), { steps, recorded: recording.events }, meta);
+    const loop = workflow.steps[2];
+    if (loop.kind !== "forEach") throw new Error("expected forEach");
+    const share = loop.body[1];
+    loop.body[0] = { id: "w3.1", kind: "switchTab", role: "nowhere" };
+    loop.body[5] = { id: "w3.6", kind: "fill", target: { description: "f", fingerprint: { role: "textbox" } }, value: "{{video.length}} {{missing}}" };
+    workflow.steps.push(share); // outside the loop, and a duplicate id
+    workflow.steps.push({ id: "w5", kind: "forEach", list: "songs", as: "song", body: [] });
+    const messages = checkWorkflow(workflow).map((p) => `${p.stepId}: ${p.message}`);
+    expect(messages).toEqual([
+      'w3.1: tab "nowhere" is not one of the workflow\'s tabs',
+      "w3.6: value: {{video.length}}: video has the fields title, url",
+      "w3.6: value: {{missing}} refers to a variable that isn't set before this step",
+      'w3.2: step id "w3.2" is used more than once',
+      'w3.2: target is looked up inside "video", which is not the current loop item',
+      "w5: \"songs\" isn't collected by an earlier \"collect\" step",
+      "w5: the loop has no steps",
     ]);
   });
 });

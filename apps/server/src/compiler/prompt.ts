@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { type RecordedEvent, type SemanticStep, describeEffect, describeStep } from "@d2a/shared";
-import { COMPILED_WORKFLOW_JSON_SCHEMA } from "./schema.js";
+import { COMPILED_WORKFLOW_JSON_SCHEMA, type CompiledWorkflow } from "./schema.js";
 
 /** Stable across calls so it stays in the prompt cache. */
 export const SYSTEM_PROMPT = `You turn a recorded browser demonstration into an automation that a deterministic runner will execute, generalized according to the user's instruction.
@@ -140,8 +140,18 @@ export function buildContext(
 }
 
 /** A follow-up turn: the user's answers to the questions, and/or changes they want. */
-export function feedbackMessage(answers: { question: string; answer: string }[], request: string | undefined): string {
+export function feedbackMessage(
+  answers: { question: string; answer: string }[],
+  request: string | undefined,
+  /** The workflow as it is now, in the answer format; it may include the user's own edits. */
+  current?: CompiledWorkflow,
+): string {
   const parts: string[] = [];
+  if (current) {
+    parts.push(
+      `This is the automation as it is now. The user may have edited it by hand since your last answer; keep their edits unless what follows asks to change them:\n${JSON.stringify(current)}`,
+    );
+  }
   if (answers.length) {
     parts.push(`The user answered your questions:\n${answers.map((a) => `Q: ${a.question}\nA: ${a.answer}`).join("\n\n")}`);
   }

@@ -62,7 +62,8 @@ function resolveTarget(ref: TargetRef, where: string, loopItem: string | undefin
     ctx.errors.push(`${where}: target "${ref.description}" has withinItem but is not inside a forEach`);
     return undefined;
   }
-  return { description: ref.description, fingerprint, within: ref.withinItem ? loopItem : undefined };
+  const source = ref.fromStep != null ? { step: ref.fromStep, ...(ref.inventoryIndex != null ? { inventoryIndex: ref.inventoryIndex } : {}) } : undefined;
+  return { description: ref.description, fingerprint, ...(ref.withinItem ? { within: loopItem } : {}), ...(source ? { source } : {}) };
 }
 
 /** Checks {{path}} references against the variables defined so far. */
@@ -107,7 +108,8 @@ function convertCondition(c: NonNullable<InnerStep["until"]>, where: string, loo
 
 function convertStep(s: InnerStep | TopStep, scope: Scope, loopItem: string | undefined, ctx: Ctx): Step | undefined {
   const where = `step ${s.id} (${s.kind})`;
-  const base = { id: s.id, ...(s.tab && s.kind !== "switchTab" ? { tab: s.tab } : {}) };
+  const basedOn = s.basedOn.filter((id) => ctx.steps.has(id));
+  const base = { id: s.id, ...(s.tab && s.kind !== "switchTab" ? { tab: s.tab } : {}), ...(basedOn.length ? { basedOn } : {}) };
   if (s.tab && !ctx.tabs.has(s.tab)) ctx.errors.push(`${where}: tab "${s.tab}" is not declared in tabs`);
   const target = (ref: TargetRef | null | undefined, field = "target") => {
     const r = need(ref, field, where, ctx);
@@ -279,5 +281,89 @@ export function toWorkflow(
       ...(compiled.closePopups ? { closePopups: true } : {}),
     },
     errors: ctx.errors,
+  };
+}
+
+function toRef(t: Target): TargetRef {
+  const { role, name, css } = t.fingerprint;
+  return {
+    description: t.description,
+    fromStep: t.source?.step ?? null,
+    inventoryIndex: t.source?.inventoryIndex ?? null,
+    role: role ?? null,
+    name: name ?? null,
+    css: css ?? null,
+    withinItem: Boolean(t.within),
+  };
+}
+
+const isWholePage = (t: Target | undefined) => Boolean(t && t.fingerprint.css === WHOLE_PAGE.fingerprint.css && !t.source);
+
+function toCompiledStep(step: Step): TopStep {
+  const out: TopStep = { id: step.id, kind: step.kind, basedOn: step.basedOn ?? [], tab: step.tab ?? null };
+  switch (step.kind) {
+    case "navigate":
+      return { ...out, url: step.url };
+    case "switchTab":
+      return { ...out, tab: step.role, url: step.url ?? null };
+    case "openTab":
+      return { ...out, tab: step.role, url: step.url };
+    case "closeTab":
+      return { ...out, tab: step.role };
+    case "click": {
+      const until = step.until && {
+        target: step.until.target && !isWholePage(step.until.target) ? toRef(step.until.target) : null,
+        textIncludes: step.until.textIncludes ?? null,
+        urlMatches: step.until.urlMatches ?? null,
+      };
+      return { ...out, target: toRef(step.target), until: until ?? null, opensTab: step.opensTab ?? null };
+    }
+    case "fill":
+      return { ...out, target: toRef(step.target), value: step.value };
+    case "press":
+      return { ...out, key: step.key, target: step.target ? toRef(step.target) : null };
+    case "waitFor":
+      return {
+        ...out,
+        target: step.target && !isWholePage(step.target) ? toRef(step.target) : null,
+        textIncludes: step.textIncludes ?? null,
+        urlMatches: step.urlMatches ?? null,
+        timeoutMs: step.timeoutMs ?? null,
+      };
+    case "extract":
+      return { ...out, name: step.name, target: toRef(step.target), attr: step.attr ?? null };
+    case "extractList":
+      return {
+        ...out,
+        name: step.name,
+        itemSelector: step.itemSelector,
+        container: step.container ? toRef(step.container) : null,
+        fields: Object.entries(step.fields).map(([name, f]) => ({ name, selector: f.selector ?? null, attr: f.attr ?? null })),
+      };
+    case "copyFromClipboard":
+      return { ...out, name: step.name };
+    case "assert":
+      return { ...out, condition: step.condition, target: step.target ? toRef(step.target) : null };
+    case "forEach":
+      return { ...out, list: step.list, as: step.as, body: step.body.map((s) => toCompiledStep(s) as InnerStep) };
+  }
+}
+
+/**
+ * The reverse of toWorkflow: a workflow (possibly edited by hand) in the compiler's answer format,
+ * so Claude can be shown the current version. Targets map back to their recorded step where known;
+ * other locator parts that format can't express (test ids, hrefs) are dropped.
+ */
+export function toCompiled(workflow: Workflow): CompiledWorkflow {
+  const notes = workflow.notes;
+  return {
+    name: workflow.name,
+    summary: notes?.summary ?? "",
+    tabs: Object.entries(workflow.tabs).map(([role, t]) => ({ role, startUrl: t.startUrl ?? null })),
+    closePopups: Boolean(workflow.closePopups),
+    steps: workflow.steps.map(toCompiledStep),
+    excludedSteps: notes?.excludedSteps ?? [],
+    assumptions: notes?.assumptions ?? [],
+    questions: notes?.questions ?? [],
   };
 }

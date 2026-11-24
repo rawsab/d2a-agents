@@ -4,9 +4,10 @@ import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import Fastify, { type FastifyBaseLogger, type FastifyReply } from "fastify";
 import { WebSocketServer } from "ws";
-import { Command, SERVER_PORT, Workflow } from "@d2a/shared";
+import { Command, SERVER_PORT, Workflow, checkWorkflow } from "@d2a/shared";
 import { ExtensionBridge } from "./bridge.js";
 import { ClaudeCompilerModel, CompileError, type CompileResult, SAMPLE_ITEMS, compile, refine } from "./compiler/index.js";
+import { toCompiled } from "./compiler/convert.js";
 import { ClaudeHealer } from "./healer.js";
 import { RunManager } from "./runs.js";
 import { Store } from "./store.js";
@@ -44,16 +45,35 @@ app.get<{ Params: { id: string } }>("/screenshots/:id", async (req, reply) => {
   if (!shot) return reply.code(404).send({ error: "not found" });
   return reply.type(shot.mime).header("cache-control", "max-age=31536000, immutable").send(Buffer.from(shot.data));
 });
-/** Saves a compile/refine result and shapes the response; maps Claude errors to HTTP errors. */
-async function compileResponse(reply: FastifyReply, canPreview: boolean, log: FastifyBaseLogger, run: () => Promise<CompileResult>) {
+/** Changes Claude proposed in the editor, waiting for the user to accept or discard them. */
+const proposals = new Map<string, { workflow: Workflow; messages: Anthropic.Beta.BetaMessageParam[] }>();
+
+/**
+ * Saves a compile/refine result (or, for a proposal, holds it until accepted) and shapes the
+ * response; maps Claude errors to HTTP errors.
+ */
+async function compileResponse(
+  reply: FastifyReply,
+  canPreview: boolean,
+  log: FastifyBaseLogger,
+  run: () => Promise<CompileResult>,
+  mode: "save" | "propose" = "save",
+) {
   try {
     const result = await run();
     const { summary, excludedSteps, assumptions, questions } = result.compiled;
     const workflow = { ...result.workflow, notes: { summary, excludedSteps, assumptions, questions, problems: result.problems } };
-    store.saveWorkflow(workflow);
-    store.saveCompileSession(workflow.id, result.messages);
+    let proposalId: string | undefined;
+    if (mode === "save") {
+      store.saveWorkflow(workflow);
+      store.saveCompileSession(workflow.id, result.messages);
+    } else {
+      proposalId = randomUUID();
+      proposals.set(proposalId, { workflow, messages: result.messages });
+    }
     result.corrections.forEach((problems, i) => log.info({ problems }, `compile correction round ${i + 1}`));
     return {
+      ...(proposalId ? { proposalId } : {}),
       workflow,
       preview: result.preview ?? null,
       rounds: result.rounds,
@@ -96,20 +116,39 @@ app.post<{ Params: { id: string }; Body: { instruction?: string } }>("/recording
   return compileResponse(reply, canPreview, req.log, () => compile(recording, instruction, deps));
 });
 
-app.post<{ Params: { id: string }; Body: { answers?: { question: string; answer: string }[]; request?: string } }>(
-  "/workflows/:id/refine",
-  async (req, reply) => {
-    const workflow = store.getWorkflow(req.params.id);
-    if (!workflow) return reply.code(404).send({ error: "not found" });
-    const history = store.getCompileSession<Anthropic.Beta.BetaMessageParam>(workflow.id);
-    const recording = workflow.recordingId ? store.getRecording(workflow.recordingId) : undefined;
-    if (!history || !recording) return reply.code(409).send({ error: "this workflow wasn't compiled from a recording" });
-    const answers = (req.body?.answers ?? []).filter((a) => a.answer?.trim());
-    const request = req.body?.request?.trim() || undefined;
-    const { canPreview, deps } = compileDeps();
-    return compileResponse(reply, canPreview, req.log, () => refine(recording, workflow, history, { answers, request }, deps));
-  },
-);
+for (const mode of ["refine", "propose"] as const) {
+  // refine saves Claude's update; propose (the editor) holds it until the user accepts it.
+  app.post<{ Params: { id: string }; Body: { answers?: { question: string; answer: string }[]; request?: string } }>(
+    `/workflows/:id/${mode}`,
+    async (req, reply) => {
+      const workflow = store.getWorkflow(req.params.id);
+      if (!workflow) return reply.code(404).send({ error: "not found" });
+      const history = store.getCompileSession<Anthropic.Beta.BetaMessageParam>(workflow.id);
+      const recording = workflow.recordingId ? store.getRecording(workflow.recordingId) : undefined;
+      if (!history || !recording) return reply.code(409).send({ error: "this workflow wasn't compiled from a recording" });
+      const answers = (req.body?.answers ?? []).filter((a) => a.answer?.trim());
+      const request = req.body?.request?.trim() || undefined;
+      const { canPreview, deps } = compileDeps();
+      // The stored workflow may include edits made in the editor; Claude starts from it.
+      const feedback = { answers, request, current: toCompiled(workflow) };
+      return compileResponse(reply, canPreview, req.log, () => refine(recording, workflow, history, feedback, deps), mode === "refine" ? "save" : "propose");
+    },
+  );
+}
+
+app.post<{ Params: { id: string; proposalId: string } }>("/workflows/:id/proposals/:proposalId/accept", async (req, reply) => {
+  const proposal = proposals.get(req.params.proposalId);
+  if (!proposal || proposal.workflow.id !== req.params.id) return reply.code(404).send({ error: "no such proposal; it may have been discarded" });
+  proposals.delete(req.params.proposalId);
+  store.saveWorkflow(proposal.workflow);
+  store.saveCompileSession(proposal.workflow.id, proposal.messages);
+  return proposal.workflow;
+});
+app.delete<{ Params: { id: string; proposalId: string } }>("/workflows/:id/proposals/:proposalId", async (req) => {
+  // The conversation goes back to how it was, so the next request starts from the accepted version.
+  proposals.delete(req.params.proposalId);
+  return { ok: true };
+});
 
 app.get("/workflows", async () => store.listWorkflows());
 app.post("/workflows", async (req, reply) => {
@@ -118,6 +157,14 @@ app.post("/workflows", async (req, reply) => {
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues });
   store.saveWorkflow(parsed.data);
   return parsed.data;
+});
+/** Saves an edit from the editor. Problems are reported, not refused: the user may save work in progress. */
+app.put<{ Params: { id: string } }>("/workflows/:id", async (req, reply) => {
+  if (!store.getWorkflow(req.params.id)) return reply.code(404).send({ error: "not found" });
+  const parsed = Workflow.safeParse({ ...(req.body as object), id: req.params.id });
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
+  store.saveWorkflow(parsed.data);
+  return { workflow: parsed.data, problems: checkWorkflow(parsed.data) };
 });
 app.get<{ Params: { id: string } }>("/workflows/:id", async (req, reply) => {
   return store.getWorkflow(req.params.id) ?? reply.code(404).send({ error: "not found" });

@@ -127,11 +127,11 @@ export async function refine(
   recording: Recording,
   workflow: Workflow,
   history: Anthropic.Beta.BetaMessageParam[],
-  feedback: { answers: { question: string; answer: string }[]; request?: string },
+  feedback: { answers: { question: string; answer: string }[]; request?: string; current?: CompiledWorkflow },
   deps: Deps,
 ): Promise<CompileResult> {
   if (!feedback.answers.length && !feedback.request) throw new CompileError("nothing to change: give an answer or a request");
-  const messages = [...history, { role: "user" as const, content: feedbackMessage(feedback.answers, feedback.request) }];
+  const messages = [...history, { role: "user" as const, content: feedbackMessage(feedback.answers, feedback.request, feedback.current) }];
   const meta = { id: workflow.id, recordingId: recording.id, instruction: workflow.instruction ?? "" };
   return converge(messages, recording, meta, deps);
 }

@@ -1,4 +1,4 @@
-import type { PageInventory } from "@d2a/shared";
+import type { PageInventory, Viewport } from "@d2a/shared";
 import { trackClipboard } from "./clipboard.js";
 import { type ExecRequest, handleExec } from "./executor.js";
 import { type ContentEvent, type RecorderHandle, installRecorder } from "./recorder.js";
@@ -17,8 +17,9 @@ const onStorage = (changes: Record<string, chrome.storage.StorageChange>, area: 
 chrome.storage.onChanged.addListener(onStorage);
 
 function send(event: ContentEvent, inventory?: PageInventory) {
+  const viewport: Viewport | undefined = inventory && { w: innerWidth, h: innerHeight };
   try {
-    chrome.runtime.sendMessage({ type: "contentEvent", event, inventory }).catch(() => {});
+    chrome.runtime.sendMessage({ type: "contentEvent", event, inventory, viewport }).catch(() => {});
   } catch {
     // Extension was reloaded; this orphaned script can no longer reach it.
     setRecording(false);

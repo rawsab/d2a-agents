@@ -1,4 +1,4 @@
-import type { PageInventory, RawEvent, RecordedEvent } from "@d2a/shared";
+import type { PageInventory, RawEvent, RecordedEvent, Viewport } from "@d2a/shared";
 import type { ServerConnection } from "./connection.js";
 
 const KEY = "recording";
@@ -43,13 +43,13 @@ export class Recorder {
     if (state) this.conn.send({ type: "recordingStopped", recordingId: state.id });
   }
 
-  fromContent(event: ContentEvent, inventory: PageInventory | undefined, sender: chrome.runtime.MessageSender) {
+  fromContent(event: ContentEvent, inventory: PageInventory | undefined, viewport: Viewport | undefined, sender: chrome.runtime.MessageSender) {
     const tab = sender.tab;
     if (tab?.id === undefined || sender.frameId !== 0) return;
     const raw = { ...event, tabId: tab.id } as RawEvent;
     this.enqueue(async () => {
       const screenshotId = tab.active && SCREENSHOT_EVENTS.has(event.type) ? await this.screenshot(tab.windowId) : undefined;
-      await this.send(raw, inventory, screenshotId);
+      await this.send(raw, inventory, screenshotId, viewport);
     });
   }
 
@@ -61,10 +61,10 @@ export class Recorder {
     this.queue = this.queue.then(task).catch(console.error);
   }
 
-  private async send(event: RawEvent, inventory?: PageInventory, screenshotId?: string) {
+  private async send(event: RawEvent, inventory?: PageInventory, screenshotId?: string, viewport?: Viewport) {
     const state = await this.state();
     if (!state) return;
-    const data: RecordedEvent = { event, inventory, screenshotId };
+    const data: RecordedEvent = { event, inventory, viewport, screenshotId };
     this.conn.send({ type: "recordedEvent", recordingId: state.id, data });
     chrome.runtime.sendMessage({ type: "recorder/event", recordingId: state.id, data }).catch(() => {});
   }

@@ -76,9 +76,14 @@ export const RawEvent = z.discriminatedUnion("type", [
 export type RawEvent = z.infer<typeof RawEvent>;
 
 /** A raw event plus the page context captured alongside it. */
+export const Viewport = z.object({ w: z.number(), h: z.number() });
+export type Viewport = z.infer<typeof Viewport>;
+
 export const RecordedEvent = z.object({
   event: RawEvent,
   inventory: PageInventory.optional(),
+  /** CSS-pixel size of the page's viewport when the inventory was taken; scales bboxes onto the screenshot. */
+  viewport: Viewport.optional(),
   screenshotId: z.string().optional(),
 });
 export type RecordedEvent = z.infer<typeof RecordedEvent>;

@@ -7,6 +7,8 @@ export const Target = z.object({
   fingerprint: Fingerprint,
   /** Name of a forEach item; the element is looked up inside that list item only. */
   within: z.string().optional(),
+  /** Where the element was seen in the recording: a recorded step, and its page-inventory entry if not the element acted on. */
+  source: z.object({ step: z.string(), inventoryIndex: z.number().optional() }).optional(),
 });
 export type Target = z.infer<typeof Target>;
 
@@ -20,26 +22,31 @@ export const Condition: z.ZodType<Condition> = z.lazy(() =>
 const Expr = z.string();
 const TabRole = z.string();
 
-const stepBase = { id: z.string(), tab: TabRole.optional() };
+const stepBase = {
+  id: z.string(),
+  tab: TabRole.optional(),
+  /** Recorded step ids this step reproduces; for screenshots and the element picker. */
+  basedOn: z.array(z.string()).optional(),
+};
 
 /** A value read from each list item: `selector` within the item (default: the item), `attr` (default: text). */
 export const ListField = z.object({ selector: z.string().optional(), attr: z.string().optional() });
 export type ListField = z.infer<typeof ListField>;
 
 export type Step =
-  | { id: string; tab?: string; kind: "navigate"; url: string }
-  | { id: string; tab?: string; kind: "switchTab"; role: string; url?: string }
-  | { id: string; tab?: string; kind: "openTab"; role: string; url: string }
-  | { id: string; tab?: string; kind: "closeTab"; role: string }
-  | { id: string; tab?: string; kind: "click"; target: Target; until?: Condition; opensTab?: string }
-  | { id: string; tab?: string; kind: "fill"; target: Target; value: string }
-  | { id: string; tab?: string; kind: "press"; key: string; target?: Target }
-  | { id: string; tab?: string; kind: "waitFor"; target?: Target; textIncludes?: string; urlMatches?: string; timeoutMs?: number }
-  | { id: string; tab?: string; kind: "extract"; name: string; target: Target; attr?: string }
-  | { id: string; tab?: string; kind: "extractList"; name: string; container?: Target; itemSelector: string; fields: Record<string, ListField> }
-  | { id: string; tab?: string; kind: "copyFromClipboard"; name: string }
-  | { id: string; tab?: string; kind: "forEach"; list: string; as: string; body: Step[] }
-  | { id: string; tab?: string; kind: "assert"; target?: Target; condition: string };
+  | { id: string; tab?: string; basedOn?: string[]; kind: "navigate"; url: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "switchTab"; role: string; url?: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "openTab"; role: string; url: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "closeTab"; role: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "click"; target: Target; until?: Condition; opensTab?: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "fill"; target: Target; value: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "press"; key: string; target?: Target }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "waitFor"; target?: Target; textIncludes?: string; urlMatches?: string; timeoutMs?: number }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "extract"; name: string; target: Target; attr?: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "extractList"; name: string; container?: Target; itemSelector: string; fields: Record<string, ListField> }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "copyFromClipboard"; name: string }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "forEach"; list: string; as: string; body: Step[] }
+  | { id: string; tab?: string; basedOn?: string[]; kind: "assert"; target?: Target; condition: string };
 
 export const Step: z.ZodType<Step> = z.lazy(() =>
   z.discriminatedUnion("kind", [

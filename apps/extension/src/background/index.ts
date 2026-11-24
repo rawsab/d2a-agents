@@ -48,7 +48,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     case "stopRecording":
       return reply(recorder.stop());
     case "contentEvent":
-      recorder.fromContent(req.event, req.inventory, sender);
+      recorder.fromContent(req.event, req.inventory, req.viewport, sender);
       return false;
   }
   return false;

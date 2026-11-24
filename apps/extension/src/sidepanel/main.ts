@@ -154,6 +154,7 @@ function renderCompiled(res: CompileResponse) {
   }
   if (res.checkedOnLivePage === false) note("muted", "Not checked on the live page (browser busy or disconnected).");
   renderFollowup(workflow);
+  $<HTMLButtonElement>("compiled-edit").onclick = () => openEditor(workflow.id);
   $<HTMLButtonElement>("compiled-dry").onclick = () => startRun(workflow.id, { limit: 1 });
   $<HTMLButtonElement>("compiled-run").onclick = () => startRun(workflow.id, {});
 }
@@ -290,17 +291,23 @@ async function loadWorkflows() {
   for (const wf of rows) {
     const li = el("li");
     const actions = el("div", "actions");
+    const edit = el("button", undefined, "Edit");
     const dry = el("button", undefined, "Dry run (1 item)");
     const full = el("button", "primary", "Run all");
+    edit.onclick = () => openEditor(wf.id);
     dry.onclick = () => startRun(wf.id, { limit: 1 });
     full.onclick = () => startRun(wf.id, {});
-    actions.append(dry, full);
+    actions.append(edit, dry, full);
     const name = el("div", "name", wf.name);
     name.title = "Review and update";
     name.onclick = () => openWorkflow(wf.id);
     li.append(name, actions);
     list.append(li);
   }
+}
+
+function openEditor(workflowId: string) {
+  chrome.tabs.create({ url: chrome.runtime.getURL(`src/editor/index.html?id=${encodeURIComponent(workflowId)}`) });
 }
 
 async function startRun(workflowId: string, options: object) {
