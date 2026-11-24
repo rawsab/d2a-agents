@@ -3,7 +3,10 @@ import type {
   CommandOf,
   CommandResults,
   Condition,
+  Fingerprint,
+  HealRecord,
   ListItem,
+  PageInventory,
   LogEntry,
   RunOptions,
   RunSnapshot,
@@ -12,11 +15,18 @@ import type {
   Workflow,
 } from "@d2a/shared";
 import { describeWorkflowStep } from "@d2a/shared";
+import type { Healer } from "./healer.js";
 import { render } from "./template.js";
 
 export interface CommandExecutor {
   execute(command: Command, timeoutMs?: number): Promise<unknown>;
 }
+
+/** Finds replacement elements when the page has changed, and keeps the ones that worked. */
+export type Healing = { healer: Healer; save: (heal: HealRecord) => void };
+
+/** A step that acts on (or waits for) an element. */
+type Targeted = Step & { target?: Target };
 
 const WAIT_TIMEOUT_MS = 10_000;
 const CLIPBOARD_TIMEOUT_MS = 5_000;
@@ -26,10 +36,27 @@ const CLICK_ATTEMPTS = 3;
 const ACTION_WAIT_MS = 15_000;
 const CLICK_EFFECT_TIMEOUT_MS = 3_000;
 const MAX_LOG = 500;
+/** Answers asked of the healer per failed lookup before the step fails. */
+const HEAL_ROUNDS = 2;
+/** After a clickFirst, how long the original element gets to appear. */
+const HEAL_RECHECK_MS = 3_000;
 
 class StopRequested extends Error {}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function describeElement({ tag, fingerprint: fp }: PageInventory[number]): string {
+  return `${fp.role ?? tag}${fp.name ? ` "${fp.name}"` : ""}`;
+}
+
+/**
+ * The parts of a page-inventory fingerprint worth keeping in a workflow. Inside a list item only
+ * role/name-like parts carry over: positions and hrefs would tie the step to this one item.
+ */
+export function healedFingerprint(fp: Fingerprint, withinItem: boolean): Fingerprint {
+  const { role, name, testId, nameAttr, id, css, href } = fp;
+  return withinItem ? { role, name, testId, nameAttr } : { role, name, testId, nameAttr, id, css, href };
+}
 
 /** Interprets a workflow, step by step, against the browser. One instance per run. */
 export class Runner {
@@ -41,6 +68,8 @@ export class Runner {
   private lastActionAt = 0;
   private stopRequested = false;
   private wake: (() => void) | undefined;
+  /** Heals made during the current step, kept only if the step then succeeds. */
+  private pendingHeals = new Map<string, { step: Targeted; record: HealRecord }>();
 
   constructor(
     id: string,
@@ -48,6 +77,7 @@ export class Runner {
     private browser: CommandExecutor,
     private options: RunOptions,
     private onUpdate: (snapshot: RunSnapshot) => void,
+    private healing?: Healing,
   ) {
     this.currentRole = Object.keys(workflow.tabs)[0] ?? "main";
     this.snapshot = {
@@ -59,6 +89,7 @@ export class Runner {
       startedAt: Date.now(),
       items: [],
       log: [],
+      heals: [],
     };
   }
 
@@ -142,9 +173,12 @@ export class Runner {
     this.onUpdate(this.snapshot);
   }
 
+  private currentItem(): number | undefined {
+    return Object.values(this.bindings).at(-1)?._index;
+  }
+
   private log(level: LogEntry["level"], message: string, stepId?: string) {
-    const item = Object.values(this.bindings).at(-1)?._index;
-    this.snapshot.log.push({ ts: Date.now(), level, message, stepId, item });
+    this.snapshot.log.push({ ts: Date.now(), level, message, stepId, item: this.currentItem() });
     if (this.snapshot.log.length > MAX_LOG) this.snapshot.log.splice(0, this.snapshot.log.length - MAX_LOG);
     this.update();
   }
@@ -213,8 +247,26 @@ export class Runner {
 
   private async step(step: Step): Promise<void> {
     await this.gate();
-    if (step.kind !== "forEach") this.log("info", describeWorkflowStep(step), step.id);
+    if (step.kind === "forEach") return this.forEach(step);
+    this.log("info", describeWorkflowStep(step), step.id);
+    try {
+      await this.runStep(step);
+    } catch (err) {
+      const pending = this.pendingHeals.get(step.id);
+      if (pending) pending.step.target = pending.record.from; // the replacement didn't work either
+      this.pendingHeals.delete(step.id);
+      throw err;
+    }
+    const pending = this.pendingHeals.get(step.id);
+    if (pending) {
+      this.pendingHeals.delete(step.id);
+      this.snapshot.heals.push(pending.record);
+      this.healing?.save(pending.record);
+      this.log("info", `saved the new element for "${pending.record.from.description}" into the workflow`, step.id);
+    }
+  }
 
+  private async runStep(step: Exclude<Step, { kind: "forEach" }>): Promise<void> {
     switch (step.kind) {
       case "switchTab":
         return this.switchTab(step.role, step.url);
@@ -238,7 +290,7 @@ export class Runner {
       case "click": {
         const tabId = await this.tabFor(step);
         const click = async () => {
-          await this.waitForTarget(tabId, step.target);
+          await this.waitForTarget(tabId, step);
           const locator = this.locator(step.target);
           const result = (await this.act(tabId, { op: "click", tabId, locator, expectNewTab: Boolean(step.opensTab) })) as CommandResults["click"];
           if (step.opensTab && result.newTabId !== null) this.adoptTab(step.opensTab, result.newTabId);
@@ -259,19 +311,24 @@ export class Runner {
       }
       case "fill": {
         const tabId = await this.tabFor(step);
-        await this.waitForTarget(tabId, step.target);
+        await this.waitForTarget(tabId, step);
         await this.act(tabId, { op: "fill", tabId, locator: this.locator(step.target), value: this.render(step.value) });
         return;
       }
       case "press": {
         const tabId = await this.tabFor(step);
-        if (step.target) await this.waitForTarget(tabId, step.target);
+        if (step.target) await this.waitForTarget(tabId, step);
         await this.act(tabId, { op: "press", tabId, key: step.key, locator: step.target && this.locator(step.target) });
         return;
       }
       case "waitFor": {
         const tabId = await this.tabFor(step);
-        const result = await this.waitUntil(tabId, step, step.timeoutMs ?? WAIT_TIMEOUT_MS);
+        let result = await this.waitUntil(tabId, step, step.timeoutMs ?? WAIT_TIMEOUT_MS);
+        // Heal only a missing element; one that is there with other text is the page's answer.
+        if (!result.met && step.target && this.healing && !(await this.exec({ op: "probe", tabId, locator: this.locator(step.target) })).found) {
+          await this.heal(tabId, step, result.detail);
+          result = await this.waitUntil(tabId, step, step.timeoutMs ?? WAIT_TIMEOUT_MS);
+        }
         if (!result.met) throw new Error(`timed out waiting for ${step.target?.description ?? step.urlMatches}: ${result.detail}`);
         return;
       }
@@ -284,7 +341,7 @@ export class Runner {
       }
       case "extract": {
         const tabId = await this.tabFor(step);
-        await this.waitForTarget(tabId, step.target);
+        await this.waitForTarget(tabId, step);
         this.vars[step.name] = await this.exec({ op: "extract", tabId, locator: this.locator(step.target), attr: step.attr });
         return;
       }
@@ -301,15 +358,84 @@ export class Runner {
       case "copyFromClipboard":
         this.vars[step.name] = await this.copied(await this.tabFor(step));
         return;
-      case "forEach":
-        return this.forEach(step);
     }
   }
 
-  /** Waits for an element an action needs; fails with why it wasn't found. */
-  private async waitForTarget(tabId: number, target: Target) {
-    const result = await this.waitUntil(tabId, { target }, ACTION_WAIT_MS);
-    if (!result.met) throw new Error(`${result.detail} (waited ${ACTION_WAIT_MS / 1000}s)`);
+  /**
+   * Waits for the element a step needs. If it doesn't appear and healing is on, the healer may
+   * replace step.target; otherwise fails with why it wasn't found.
+   */
+  private async waitForTarget(tabId: number, step: Targeted) {
+    const result = await this.waitUntil(tabId, { target: step.target }, ACTION_WAIT_MS);
+    if (result.met) return;
+    const problem = `${result.detail} (waited ${ACTION_WAIT_MS / 1000}s)`;
+    if (!this.healing) throw new Error(problem);
+    await this.heal(tabId, step, problem);
+  }
+
+  /** Asks the healer for a way to the step's element; returns once it is found, else throws. */
+  private async heal(tabId: number, step: Targeted, problem: string) {
+    const healing = this.healing!;
+    const from = step.target!;
+    const rejected: string[] = [];
+    this.log("warn", `${from.description} not found (${problem}); asking Claude to find it`, step.id);
+    for (let round = 0; round < HEAL_ROUNDS; round++) {
+      await this.gate();
+      const [elements, shot, info] = await Promise.all([
+        this.exec({ op: "snapshot", tabId }),
+        this.exec({ op: "screenshot", tabId }).catch(() => undefined), // the healer can work without it
+        this.exec({ op: "tabInfo", tabId }),
+      ]);
+      const { role, name, css } = from.fingerprint;
+      let decision;
+      try {
+        decision = await healing.healer.decide({
+          step: describeWorkflowStep(step),
+          target: { description: from.description, role, name, css },
+          withinItem: Boolean(from.within),
+          problem,
+          url: info.url,
+          title: info.title,
+          elements,
+          screenshot: shot?.data,
+          rejected,
+        });
+      } catch (err) {
+        throw new Error(`${problem}; healing failed: ${(err as Error).message}`);
+      }
+      if (decision.action === "giveUp") throw new Error(`${problem}; Claude couldn't find it: ${decision.reason}`);
+      const el = decision.elementIndex === null ? undefined : elements[decision.elementIndex];
+      if (!el) {
+        rejected.push(`${decision.action} [${decision.elementIndex}]: there is no such element`);
+        continue;
+      }
+
+      if (decision.action === "clickFirst") {
+        this.log("info", `clicking ${describeElement(el)} first: ${decision.reason}`, step.id);
+        await this.act(tabId, { op: "click", tabId, locator: { fingerprint: el.fingerprint } });
+        const again = await this.waitUntil(tabId, { target: from }, HEAL_RECHECK_MS);
+        if (again.met) return;
+        problem = again.detail;
+        rejected.push(`clickFirst [${decision.elementIndex}] ${describeElement(el)}: clicked it, but the element still wasn't found`);
+        continue;
+      }
+
+      const to: Target = { ...from, fingerprint: healedFingerprint(el.fingerprint, Boolean(from.within)) };
+      const probe = await this.exec({ op: "probe", tabId, locator: this.locator(to) });
+      if (!probe.found) {
+        rejected.push(`retarget [${decision.elementIndex}] ${describeElement(el)}: ${probe.error}`);
+        continue;
+      }
+      step.target = to;
+      const original = this.pendingHeals.get(step.id)?.record.from ?? from;
+      this.pendingHeals.set(step.id, {
+        step,
+        record: { ts: Date.now(), stepId: step.id, item: this.currentItem(), from: original, to, reason: decision.reason },
+      });
+      this.log("info", `using ${describeElement(el)} instead: ${decision.reason}`, step.id);
+      return;
+    }
+    throw new Error(`${problem}; Claude's answers didn't work: ${rejected.join("; ")}`);
   }
 
   /** Evaluates a condition once. */

@@ -4,6 +4,7 @@ import { injectInto } from "./inject.js";
 const LOAD_TIMEOUT_MS = 20_000;
 const NEW_TAB_TIMEOUT_MS = 10_000;
 const SETTLE_MS = 300;
+const SCREENSHOT_QUALITY = 60;
 
 /** CDP key definitions for keys a workflow can press. */
 const KEYS: Record<string, { code: string; keyCode: number; text?: string }> = {
@@ -151,6 +152,11 @@ export class Executor {
         return null;
       case "snapshot":
         return this.content(cmd.tabId, { type: "exec/snapshot" });
+      case "screenshot": {
+        // Through CDP rather than captureVisibleTab: works on tabs that aren't in front.
+        const shot = (await this.cdp(cmd.tabId, "Page.captureScreenshot", { format: "jpeg", quality: SCREENSHOT_QUALITY })) as { data: string };
+        return { data: shot.data };
+      }
     }
   }
 

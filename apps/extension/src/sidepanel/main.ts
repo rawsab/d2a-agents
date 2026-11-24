@@ -328,6 +328,30 @@ function renderRun(run: RunSnapshot | null) {
   pause.hidden = finished;
   $<HTMLButtonElement>("run-stop").textContent = finished ? "Close" : "Stop";
 
+  const heals = $<HTMLUListElement>("run-heals");
+  heals.replaceChildren();
+  // Older saved runs have no heals.
+  (run.heals ?? []).forEach((heal, i) => {
+    const li = el("li", heal.reverted ? "reverted" : undefined);
+    const name = (t: typeof heal.to) => t.fingerprint.name ?? t.fingerprint.role ?? t.description;
+    li.append(
+      el("span", undefined, `${heal.from.description}: now "${name(heal.to)}" (was "${name(heal.from)}")${heal.reverted ? " · undone" : ""}`),
+      el("span", "why", heal.reason),
+    );
+    if (!heal.reverted) {
+      const undo = el("button", "ghost", "Undo");
+      undo.disabled = !finished;
+      undo.title = finished ? "Put the original element back in the workflow" : "Available when the run ends";
+      undo.onclick = async () => {
+        const res = await fetch(`${API}/runs/${run.id}/heals/${i}/revert`, { method: "POST" });
+        if (!res.ok) alert(`Could not undo: ${(await res.json()).error}`);
+        pollRun();
+      };
+      li.append(undo);
+    }
+    heals.append(li);
+  });
+
   const items = $<HTMLOListElement>("run-items");
   items.replaceChildren();
   for (const item of run.items) {

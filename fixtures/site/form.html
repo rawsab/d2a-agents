@@ -15,7 +15,10 @@
     <p id="status" role="status"></p>
     <script>
       // ?ads=1 opens an "ad" tab on another origin with every download, like many converter sites.
-      const ads = new URLSearchParams(location.search).has("ads");
+      const params = new URLSearchParams(location.search);
+      const ads = params.has("ads");
+      // ?relabel=<text> renames the Download button after the first download, like a site redesign mid-run.
+      const relabel = params.get("relabel");
       document.getElementById("dl").addEventListener("submit", async (e) => {
         e.preventDefault();
         if (ads) window.open(`http://localhost:${location.port}/ad.html`, "_blank");
@@ -23,6 +26,7 @@
         await fetch("/log", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }) });
         document.getElementById("status").textContent = `Queued ${url}`;
         document.getElementById("url").value = "";
+        if (relabel) document.querySelector("#dl button").textContent = relabel;
       });
     </script>
   </body>

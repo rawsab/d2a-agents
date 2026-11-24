@@ -7,6 +7,7 @@ import { WebSocketServer } from "ws";
 import { Command, SERVER_PORT, Workflow } from "@d2a/shared";
 import { ExtensionBridge } from "./bridge.js";
 import { ClaudeCompilerModel, CompileError, type CompileResult, SAMPLE_ITEMS, compile, refine } from "./compiler/index.js";
+import { ClaudeHealer } from "./healer.js";
 import { RunManager } from "./runs.js";
 import { Store } from "./store.js";
 
@@ -16,7 +17,7 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const store = new Store();
 const bridge = new ExtensionBridge(store);
-const runs = new RunManager(store, bridge);
+const runs = new RunManager(store, bridge, new ClaudeHealer());
 const app = Fastify({ logger: { level: "info" } });
 
 app.get("/health", async () => ({ ok: true, extensionConnected: bridge.connected }));
@@ -144,6 +145,10 @@ for (const action of ["pause", "resume", "stop"] as const) {
     runs.control(req.params.id, action) ? { ok: true } : reply.code(404).send({ error: "no such active run" }),
   );
 }
+app.post<{ Params: { id: string; index: string } }>("/runs/:id/heals/:index/revert", async (req, reply) => {
+  const result = runs.revertHeal(req.params.id, Number(req.params.index));
+  return "error" in result ? reply.code(result.status).send({ error: result.error }) : result;
+});
 
 // Debug hook: run one low-level command against the browser.
 app.post("/debug/command", async (req) => bridge.execute(Command.parse(req.body)));

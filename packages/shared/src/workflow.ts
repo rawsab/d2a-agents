@@ -107,6 +107,16 @@ export const Workflow = z.object({
 });
 export type Workflow = z.infer<typeof Workflow>;
 
+/** The step with this id, at the top level or inside a forEach. */
+export function findStep(steps: Step[], id: string): Step | undefined {
+  for (const step of steps) {
+    if (step.id === id) return step;
+    const inner = step.kind === "forEach" ? findStep(step.body, id) : undefined;
+    if (inner) return inner;
+  }
+  return undefined;
+}
+
 /** One-line, plain-language description of a workflow step. */
 export function describeWorkflowStep(step: Step): string {
   switch (step.kind) {

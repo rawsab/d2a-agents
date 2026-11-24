@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Target } from "./workflow.js";
 
 export const RunOptions = z.object({
   /** Only run the first N items of each forEach (1 = dry run). */
@@ -7,6 +8,8 @@ export const RunOptions = z.object({
   delayMs: z.number().int().nonnegative().default(500),
   /** Extra attempts per item before it is marked failed and skipped. */
   retries: z.number().int().nonnegative().default(1),
+  /** Ask Claude to find a step's element when the page has changed, and save fixes that work. */
+  heal: z.boolean().default(true),
 });
 export type RunOptions = z.infer<typeof RunOptions>;
 
@@ -21,6 +24,18 @@ export type ItemResult = {
 
 export type LogEntry = { ts: number; level: "info" | "warn" | "error"; message: string; stepId?: string; item?: number };
 
+/** A step whose element was replaced during a run; saved into the workflow once the step worked. */
+export type HealRecord = {
+  ts: number;
+  stepId: string;
+  item?: number;
+  from: Target;
+  to: Target;
+  reason: string;
+  /** The user put the original element back. */
+  reverted?: boolean;
+};
+
 export type RunSnapshot = {
   id: string;
   workflowId: string;
@@ -32,4 +47,5 @@ export type RunSnapshot = {
   error?: string;
   items: ItemResult[];
   log: LogEntry[];
+  heals: HealRecord[];
 };

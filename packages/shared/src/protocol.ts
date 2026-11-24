@@ -44,6 +44,8 @@ export const Command = z.discriminatedUnion("op", [
   /** Detaches the debugger from the tab. */
   z.object({ op: z.literal("release"), ...tab }),
   z.object({ op: z.literal("snapshot"), ...tab }),
+  /** JPEG of the visible part of the page, base64 (no data: prefix). */
+  z.object({ op: z.literal("screenshot"), ...tab }),
 ]);
 export type Command = z.infer<typeof Command>;
 export type CommandOf<K extends Command["op"]> = Extract<Command, { op: K }>;
@@ -70,6 +72,7 @@ export type CommandResults = {
   setPopupPolicy: null;
   release: null;
   snapshot: PageInventory;
+  screenshot: { data: string };
 };
 
 export const ExtensionToServer = z.discriminatedUnion("type", [

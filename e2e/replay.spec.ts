@@ -104,7 +104,7 @@ test("a failing item is retried, then skipped, and the rest still run", async ()
   await list.goto(`${fixture.origin}/list.html`);
   await list.evaluate(() => document.querySelectorAll(".share")[2].remove()); // item 3 can't be shared
 
-  const run = await runWorkflow(fixtureWorkflow(fixture.origin), { delayMs: 0, retries: 1 });
+  const run = await runWorkflow(fixtureWorkflow(fixture.origin), { delayMs: 0, retries: 1, heal: false });
   expect(run.status).toBe("done");
   expect(run.items.map((i) => i.status)).toEqual(["ok", "ok", "failed", "ok"]);
   expect(run.items[2].error).toContain('no visible element matches button "Share"');
