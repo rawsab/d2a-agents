@@ -17,6 +17,16 @@ app.get<{ Params: { id: string } }>("/recordings/:id", async (req, reply) => {
   const rec = store.getRecording(req.params.id);
   return rec ?? reply.code(404).send({ error: "not found" });
 });
+app.put<{ Params: { id: string; eventIndex: string }; Body: { noise: boolean | null } }>(
+  "/recordings/:id/overrides/:eventIndex",
+  async (req, reply) => {
+    if (!store.getRecording(req.params.id)) return reply.code(404).send({ error: "not found" });
+    const noise = req.body?.noise;
+    if (noise !== null && typeof noise !== "boolean") return reply.code(400).send({ error: "noise must be true, false or null" });
+    store.setOverride(req.params.id, Number(req.params.eventIndex), noise);
+    return { ok: true };
+  },
+);
 app.delete<{ Params: { id: string } }>("/recordings/:id", async (req, reply) =>
   store.deleteRecording(req.params.id) ? { ok: true } : reply.code(404).send({ error: "not found" }),
 );

@@ -16,6 +16,12 @@ export class Store {
         data TEXT NOT NULL,
         PRIMARY KEY (recording_id, seq)
       );
+      CREATE TABLE IF NOT EXISTS step_overrides (
+        recording_id TEXT NOT NULL REFERENCES recordings(id),
+        event_index INTEGER NOT NULL,
+        noise INTEGER NOT NULL,
+        PRIMARY KEY (recording_id, event_index)
+      );
       CREATE TABLE IF NOT EXISTS workflows (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
       );
@@ -111,6 +117,7 @@ export class Store {
 
   deleteRecording(id: string) {
     this.db.prepare("DELETE FROM screenshots WHERE recording_id = ?").run(id);
+    this.db.prepare("DELETE FROM step_overrides WHERE recording_id = ?").run(id);
     this.db.prepare("DELETE FROM recorded_events WHERE recording_id = ?").run(id);
     return this.db.prepare("DELETE FROM recordings WHERE id = ?").run(id).changes > 0;
   }
@@ -123,6 +130,24 @@ export class Store {
     const events = this.db
       .prepare("SELECT data FROM recorded_events WHERE recording_id = ? ORDER BY seq")
       .all(id) as { data: string }[];
-    return { ...row, events: events.map((e) => JSON.parse(e.data)) };
+    const overrides = this.db
+      .prepare("SELECT event_index AS i, noise FROM step_overrides WHERE recording_id = ?")
+      .all(id) as { i: number; noise: number }[];
+    return {
+      ...row,
+      events: events.map((e) => JSON.parse(e.data)),
+      overrides: Object.fromEntries(overrides.map((o) => [String(o.i), Boolean(o.noise)])),
+    };
+  }
+
+  /** Records the user's keep/noise decision for the step starting at eventIndex; null clears it. */
+  setOverride(recordingId: string, eventIndex: number, noise: boolean | null) {
+    if (noise === null) {
+      this.db.prepare("DELETE FROM step_overrides WHERE recording_id = ? AND event_index = ?").run(recordingId, eventIndex);
+    } else {
+      this.db
+        .prepare("INSERT OR REPLACE INTO step_overrides (recording_id, event_index, noise) VALUES (?, ?, ?)")
+        .run(recordingId, eventIndex, noise ? 1 : 0);
+    }
   }
 }

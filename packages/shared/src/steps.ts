@@ -1,4 +1,7 @@
-import type { Fingerprint, RecordedEvent } from "./events.js";
+import type { Effect, Fingerprint, RecordedEvent } from "./events.js";
+
+/** Why a step looks unintended. Steps are flagged, never dropped; the user can override. */
+export type Noise = { rule: string; reason: string; confidence: number };
 
 /** A user-level action merged from one or more raw events. */
 type StepBase = {
@@ -9,12 +12,17 @@ type StepBase = {
   ts: number;
   /** Indexes into the recording's events, for screenshots and page inventories. */
   events: number[];
+  /** What the step's action changed on the page, when measured. */
+  effect?: Effect;
+  noise?: Noise;
+  /** The user marked this step as intended, overriding any noise flag. */
+  keptByUser?: boolean;
 };
 
 export type SemanticStep =
   | (StepBase & { kind: "openTab"; openedBy?: string })
   | (StepBase & { kind: "switchTab"; initial?: boolean })
-  | (StepBase & { kind: "navigate"; transition?: string })
+  | (StepBase & { kind: "navigate"; transition?: string; back?: boolean })
   | (StepBase & { kind: "click"; target: Fingerprint })
   | (StepBase & { kind: "fill"; target: Fingerprint; value: string; masked: boolean; fromStep?: string })
   | (StepBase & { kind: "press"; key: string; target: Fingerprint })
@@ -35,7 +43,25 @@ export function sameTarget(a?: Fingerprint, b?: Fingerprint): boolean {
   return Boolean(a.css && a.css === b.css);
 }
 
-export function mergeEvents(recorded: RecordedEvent[]): SemanticStep[] {
+/**
+ * Merges raw events into semantic steps and flags likely noise.
+ * `overrides` maps a step's first event index to the user's decision (true = noise, false = keep).
+ */
+export function mergeEvents(recorded: RecordedEvent[], overrides: Record<string, boolean> = {}): SemanticStep[] {
+  const steps = mergeRaw(recorded);
+  annotateNoise(steps, recorded);
+  for (const step of steps) {
+    const decision = overrides[String(step.events[0])];
+    if (decision === true) step.noise = { rule: "user", reason: "marked as noise by you", confidence: 1 };
+    if (decision === false) {
+      step.noise = undefined;
+      step.keptByUser = true;
+    }
+  }
+  return steps;
+}
+
+function mergeRaw(recorded: RecordedEvent[]): SemanticStep[] {
   const order = recorded.map((_, i) => i).sort((a, b) => recorded[a].event.ts - recorded[b].event.ts);
   const steps: SemanticStep[] = [];
   let counter = 0;
@@ -43,8 +69,20 @@ export function mergeEvents(recorded: RecordedEvent[]): SemanticStep[] {
   const last = () => steps[steps.length - 1];
   const lastOnTab = (tabId: number) => [...steps].reverse().find((s) => s.tabId === tabId);
 
+  /** Action id → its event index; steps can be replaced (click → fill/copy), so resolve lazily. */
+  const actionIndex = new Map<string, number>();
+
   for (const idx of order) {
     const ev = recorded[idx].event;
+    if (ev.type === "effect") {
+      const actionIdx = actionIndex.get(ev.actionId);
+      const step = actionIdx === undefined ? undefined : steps.find((s) => s.events.includes(actionIdx));
+      if (step) {
+        step.events.push(idx);
+        step.effect ??= ev.effect;
+      }
+      continue;
+    }
     const base = { tabId: ev.tabId, url: ev.url, title: ev.title, ts: ev.ts, events: [idx] };
     const prev = last();
 
@@ -65,6 +103,7 @@ export function mergeEvents(recorded: RecordedEvent[]): SemanticStep[] {
         const onTab = lastOnTab(ev.tabId);
         const qualifiers = ev.transitionQualifiers ?? [];
         const isRedirect = qualifiers.some((q) => q.endsWith("redirect"));
+        const isBack = qualifiers.includes("forward_back");
         if (onTab?.kind === "openTab" && onTab === prev) {
           // A new tab's first commit just tells us where it landed.
           onTab.url = ev.url;
@@ -74,13 +113,14 @@ export function mergeEvents(recorded: RecordedEvent[]): SemanticStep[] {
           if (onTab.kind === "navigate") onTab.url = ev.url;
         } else if (
           onTab &&
+          !isBack &&
           ACTION_KINDS.has(onTab.kind) &&
           CONSEQUENCE_TRANSITIONS.has(ev.transitionType ?? "link") &&
           ev.ts - onTab.ts < CONSEQUENCE_MS
         ) {
           onTab.events.push(idx);
         } else {
-          steps.push({ ...base, id: nextId(), kind: "navigate", transition: ev.transitionType });
+          steps.push({ ...base, id: nextId(), kind: "navigate", transition: ev.transitionType, back: isBack || undefined });
         }
         break;
       }
@@ -133,8 +173,94 @@ export function mergeEvents(recorded: RecordedEvent[]): SemanticStep[] {
         break;
       }
     }
+    if (ev.id) actionIndex.set(ev.id, idx);
   }
   return steps;
+}
+
+const REPEAT_CLICK_MS = 600;
+
+/**
+ * Activity after an action counts as caused by it if the page was quiet before (any change),
+ * or, on a busy page (e.g. a playing video), if it clearly exceeds the baseline.
+ * Missing real steps is worse than missing noise, so this leans towards "had an effect".
+ */
+function burst(after: number, before: number): boolean {
+  return after > 0 && after > (before > 0 ? before * 1.5 + 2 : 0);
+}
+
+export function hadEffect(e: Effect): boolean {
+  return (
+    e.urlChanged ||
+    e.unloaded ||
+    e.copied ||
+    e.focusMoved ||
+    e.expandedChanged ||
+    e.opened.length > 0 ||
+    e.closed.length > 0 ||
+    burst(e.mutations, e.baselineMutations) ||
+    burst(e.requests, e.baselineRequests)
+  );
+}
+
+function navigated(step: SemanticStep, recorded: RecordedEvent[]): boolean {
+  return step.events.some((i) => recorded[i]?.event.type === "navigate");
+}
+
+function submitted(step: SemanticStep, recorded: RecordedEvent[]): boolean {
+  return step.events.some((i) => recorded[i]?.event.type === "submit");
+}
+
+function annotateNoise(steps: SemanticStep[], recorded: RecordedEvent[]) {
+  const flag = (s: SemanticStep | undefined, rule: string, reason: string, confidence: number) => {
+    if (s && !s.noise) s.noise = { rule, reason, confidence };
+  };
+
+  steps.forEach((s, i) => {
+    const prev = steps[i - 1];
+    const next = steps[i + 1];
+
+    if (s.kind === "click") {
+      const effective =
+        navigated(s, recorded) ||
+        submitted(s, recorded) ||
+        steps.some((o) => o.kind === "openTab" && o.openedBy === s.id) ||
+        (s.effect !== undefined && hadEffect(s.effect));
+      if (s.effect && !effective) {
+        if (s.target.role) flag(s, "no-effect", "click had no visible effect", 0.7);
+        else flag(s, "no-effect", "clicked a non-interactive area; nothing happened", 0.85);
+      }
+      if (prev?.kind === "click" && sameTarget(prev.target, s.target) && s.ts - prev.ts < REPEAT_CLICK_MS) {
+        flag(s, "repeat", "repeated click on the same element", 0.6);
+      }
+    }
+
+    // Opened something, then immediately closed it again.
+    if ((s.kind === "click" || s.kind === "press") && s.effect?.opened.length && next) {
+      const closesIt =
+        next.effect?.closed.some((c) => s.effect!.opened.includes(c)) &&
+        ((next.kind === "press" && next.key === "Escape") || (next.kind === "click" && !navigated(next, recorded)));
+      if (closesIt) {
+        flag(s, "dismissed", `opened ${s.effect.opened[0]} and closed it without using it`, 0.6);
+        flag(next, "dismissed", `closed ${s.effect.opened[0]} right after opening it`, 0.6);
+      }
+    }
+
+    // Went to a page and came straight back.
+    if (s.kind === "navigate" && s.back && prev && (prev.kind === "navigate" || navigated(prev, recorded))) {
+      const before = prev.kind === "navigate" ? [...steps.slice(0, i - 1)].reverse().find((x) => x.tabId === s.tabId)?.url : prev.url;
+      if (before && before === s.url) {
+        flag(prev, "detour", "went to a page and came straight back", 0.65);
+        flag(s, "detour", "went back without doing anything on the page", 0.65);
+      }
+    }
+
+    // Looked at another tab and came back without doing anything there.
+    if (s.kind === "switchTab" && !s.initial && prev && next?.kind === "switchTab" && next.tabId === prev.tabId) {
+      flag(s, "glance", "looked at another tab without doing anything there", 0.5);
+      flag(next, "glance", "came back from a tab without doing anything there", 0.5);
+    }
+  });
 }
 
 function findCopy(steps: SemanticStep[], value: string): string | undefined {
@@ -165,6 +291,20 @@ export function describeTarget(t?: Fingerprint): string {
   const name = t.name ?? t.text;
   const role = t.role ?? "element";
   return name ? `${role} "${truncate(name, 40)}"` : role;
+}
+
+/** One-line summary of what an action changed, for display. */
+export function describeEffect(e: Effect): string {
+  const parts: string[] = [];
+  if (e.unloaded || e.urlChanged) parts.push("navigated");
+  if (e.opened.length) parts.push(`opened ${e.opened.join(", ")}`);
+  if (e.closed.length) parts.push(`closed ${e.closed.join(", ")}`);
+  if (e.copied) parts.push("copied");
+  if (e.expandedChanged) parts.push("expanded/collapsed");
+  if (e.focusMoved) parts.push("moved focus");
+  if (burst(e.mutations, e.baselineMutations)) parts.push(`${e.mutations} DOM changes`);
+  if (burst(e.requests, e.baselineRequests)) parts.push(`${e.requests} request${e.requests === 1 ? "" : "s"}`);
+  return parts.length ? parts.join(" · ") : "no visible effect";
 }
 
 export function describeStep(s: SemanticStep): string {

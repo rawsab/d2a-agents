@@ -3,6 +3,8 @@ import type { ServerConnection } from "./connection.js";
 
 const KEY = "recording";
 const SCREENSHOT_MIN_INTERVAL_MS = 600; // Chrome allows ~2 captureVisibleTab calls per second.
+/** Only user actions get a screenshot; typing, copies and effects don't need one. */
+const SCREENSHOT_EVENTS = new Set(["click", "keydown", "paste", "submit"]);
 
 export type RecordingState = { id: string; name: string } | null;
 
@@ -12,6 +14,8 @@ type ContentEvent = DistributiveOmit<RawEvent, "tabId">;
 /** Recording state lives in storage.session so it survives service-worker restarts. */
 export class Recorder {
   private lastShot = 0;
+  /** Events are forwarded strictly in arrival order, even though some wait for a screenshot. */
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(private conn: ServerConnection) {
     // Content scripts read the recording flag directly.
@@ -39,15 +43,25 @@ export class Recorder {
     if (state) this.conn.send({ type: "recordingStopped", recordingId: state.id });
   }
 
-  async fromContent(event: ContentEvent, inventory: PageInventory | undefined, sender: chrome.runtime.MessageSender) {
+  fromContent(event: ContentEvent, inventory: PageInventory | undefined, sender: chrome.runtime.MessageSender) {
     const tab = sender.tab;
     if (tab?.id === undefined || sender.frameId !== 0) return;
     const raw = { ...event, tabId: tab.id } as RawEvent;
-    const screenshotId = tab.active ? await this.screenshot(tab.windowId) : undefined;
-    await this.record(raw, inventory, screenshotId);
+    this.enqueue(async () => {
+      const screenshotId = tab.active && SCREENSHOT_EVENTS.has(event.type) ? await this.screenshot(tab.windowId) : undefined;
+      await this.send(raw, inventory, screenshotId);
+    });
   }
 
-  private async record(event: RawEvent, inventory?: PageInventory, screenshotId?: string) {
+  private record(event: RawEvent) {
+    this.enqueue(() => this.send(event));
+  }
+
+  private enqueue(task: () => Promise<void>) {
+    this.queue = this.queue.then(task).catch(console.error);
+  }
+
+  private async send(event: RawEvent, inventory?: PageInventory, screenshotId?: string) {
     const state = await this.state();
     if (!state) return;
     const data: RecordedEvent = { event, inventory, screenshotId };

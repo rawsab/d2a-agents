@@ -1,4 +1,5 @@
 import type { Fingerprint, PageInventory, RawEvent } from "@d2a/shared";
+import { EffectProbes, PageActivity } from "./effects.js";
 import { fingerprint, interactiveAncestor } from "./fingerprint.js";
 import { pageInventory } from "./inventory.js";
 
@@ -31,16 +32,29 @@ function selectedText(): string {
   return window.getSelection()?.toString() ?? "";
 }
 
-/**
- * Installs capture listeners; events are emitted only while isRecording() is true.
- * Returns a function that removes them.
- */
-export function installRecorder(isRecording: () => boolean, emit: Emit): () => void {
+export type RecorderHandle = {
+  /** Call when the recording flag changes, so page observers run only while recording. */
+  recordingChanged(): void;
+  dispose(): void;
+};
+
+/** Installs capture listeners; events are emitted only while isRecording() is true. */
+export function installRecorder(isRecording: () => boolean, emit: Emit): RecorderHandle {
   const abort = new AbortController();
   const { signal } = abort;
   let pending: { el: Element; target: Fingerprint; value: string; masked: boolean } | undefined;
   let lastCopy: { value: string; ts: number } | undefined;
-  const page = () => ({ url: location.href, title: document.title, ts: Date.now() });
+  // Sub-millisecond, monotonic timestamps: a click and the copy it triggers often share a millisecond.
+  const page = () => ({ url: location.href, title: document.title, ts: performance.timeOrigin + performance.now() });
+  const activity = new PageActivity();
+  const probes = new EffectProbes(activity, () => lastCopy?.ts ?? 0);
+
+  /** Emits an action, then (after the effect window) what it changed. */
+  const emitAction = (el: Element, event: ContentEvent & { type: "click" | "keydown" }, inventory: PageInventory) => {
+    const id = crypto.randomUUID();
+    emit({ ...event, id }, inventory);
+    probes.start(el, (effect) => emit({ ...page(), type: "effect", actionId: id, effect }));
+  };
 
   /** Typing is coalesced; the final value is emitted when the user moves on. */
   const flush = () => {
@@ -65,7 +79,7 @@ export function installRecorder(isRecording: () => boolean, emit: Emit): () => v
     if (pending && pending.el !== el) flush();
     // Inventory is taken before the click changes the page: what the user could choose from.
     const inventory = pageInventory();
-    emit({ ...page(), type: "click", target: fingerprint(el) }, inventory);
+    emitAction(el, { ...page(), type: "click", target: fingerprint(el) }, inventory);
   }, opts);
 
   addEventListener("input", (e) => {
@@ -93,7 +107,7 @@ export function installRecorder(isRecording: () => boolean, emit: Emit): () => v
   addEventListener("keydown", (e) => {
     if (!isRecording() || !e.isTrusted || !RECORDED_KEYS.has(e.key) || !(e.target instanceof Element)) return;
     flush();
-    emit({ ...page(), type: "keydown", target: fingerprint(e.target), key: e.key }, pageInventory());
+    emitAction(e.target, { ...page(), type: "keydown", target: fingerprint(e.target), key: e.key }, pageInventory());
   }, opts);
 
   addEventListener("submit", (e) => {
@@ -125,6 +139,18 @@ export function installRecorder(isRecording: () => boolean, emit: Emit): () => v
     if (typeof value === "string") emitCopy(value);
   }, { signal });
 
-  addEventListener("pagehide", flush, opts);
-  return () => abort.abort();
+  addEventListener("pagehide", () => {
+    flush();
+    probes.finishAll(true);
+  }, opts);
+
+  const recordingChanged = () => activity.setActive(isRecording());
+  recordingChanged();
+  return {
+    recordingChanged,
+    dispose() {
+      abort.abort();
+      activity.setActive(false);
+    },
+  };
 }

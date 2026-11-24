@@ -24,7 +24,30 @@ export const PageInventory = z.array(
 );
 export type PageInventory = z.infer<typeof PageInventory>;
 
+/** What an action changed, measured over a short window after it (and the same window before, as baseline). */
+export const Effect = z.object({
+  windowMs: z.number(),
+  mutations: z.number(),
+  baselineMutations: z.number(),
+  requests: z.number(),
+  baselineRequests: z.number(),
+  urlChanged: z.boolean(),
+  /** Focus moved somewhere other than the element acted on. */
+  focusMoved: z.boolean(),
+  /** The element's aria-expanded changed (menus, dropdowns, accordions). */
+  expandedChanged: z.boolean(),
+  /** Dialogs, menus and popovers that appeared / disappeared. */
+  opened: z.array(z.string()),
+  closed: z.array(z.string()),
+  copied: z.boolean(),
+  /** The page unloaded before the window ended (the action navigated). */
+  unloaded: z.boolean(),
+});
+export type Effect = z.infer<typeof Effect>;
+
 const base = {
+  /** Set on actions so a later "effect" event can refer to them. */
+  id: z.string().optional(),
   tabId: z.number(),
   url: z.string(),
   title: z.string().optional(),
@@ -46,6 +69,7 @@ export const RawEvent = z.discriminatedUnion("type", [
   }),
   z.object({ ...base, type: z.literal("tabCreated"), openerTabId: z.number().optional() }),
   z.object({ ...base, type: z.literal("tabActivated") }),
+  z.object({ ...base, type: z.literal("effect"), actionId: z.string(), effect: Effect }),
 ]);
 export type RawEvent = z.infer<typeof RawEvent>;
 
@@ -62,5 +86,7 @@ export const Recording = z.object({
   name: z.string(),
   createdAt: z.number(),
   events: z.array(RecordedEvent),
+  /** User decisions keyed by a step's first event index: true = noise, false = keep. */
+  overrides: z.record(z.boolean()).optional(),
 });
 export type Recording = z.infer<typeof Recording>;

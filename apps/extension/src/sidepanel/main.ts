@@ -3,6 +3,7 @@ import {
   type Recording,
   type RunSnapshot,
   type SemanticStep,
+  describeEffect,
   describeStep,
   mergeEvents,
 } from "@d2a/shared";
@@ -30,16 +31,30 @@ function host(url: string) {
   }
 }
 
-function renderSteps(list: HTMLOListElement, steps: SemanticStep[], events: RecordedEvent[]) {
+/** Called with the step's first event index and the new decision (true = noise, false = keep). */
+type OnDecide = (eventIndex: number, noise: boolean) => void;
+
+function renderSteps(list: HTMLOListElement, steps: SemanticStep[], events: RecordedEvent[], onDecide?: OnDecide) {
   list.replaceChildren();
   if (steps.length === 0) list.append(el("li", "empty", "No steps yet — interact with a page."));
   for (const step of steps) {
-    const li = el("li");
+    const li = el("li", step.noise ? "noise" : undefined);
     const body = el("div");
     body.append(el("div", "desc", describeStep(step)));
+    if (step.noise) body.append(el("div", "why", `Likely noise: ${step.noise.reason}`));
     const inventory = step.events.map((i) => events[i]?.inventory).find(Boolean);
-    const meta = [host(step.url), inventory ? `${inventory.length} elements available` : ""].filter(Boolean).join(" · ");
+    const meta = [
+      host(step.url),
+      step.effect ? describeEffect(step.effect) : "",
+      inventory ? `${inventory.length} elements available` : "",
+      step.keptByUser ? "kept by you" : "",
+    ].filter(Boolean).join(" · ");
     body.append(el("div", "meta", meta));
+    if (onDecide) {
+      const toggle = el("button", "ghost toggle", step.noise ? "Keep step" : "Mark as noise");
+      toggle.onclick = () => onDecide(step.events[0], !step.noise);
+      body.append(toggle);
+    }
     const shot = step.events.map((i) => events[i]?.screenshotId).find(Boolean);
     if (shot) {
       const img = el("img");
@@ -99,7 +114,15 @@ async function openRecording(id: string) {
   const rec = (await (await fetch(`${API}/recordings/${id}`)).json()) as Recording;
   openRecordingId = id;
   $("detail-name").textContent = rec.name;
-  renderSteps($<HTMLOListElement>("detail-steps"), mergeEvents(rec.events), rec.events);
+  const decide: OnDecide = async (eventIndex, noise) => {
+    await fetch(`${API}/recordings/${id}/overrides/${eventIndex}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ noise }),
+    });
+    openRecording(id);
+  };
+  renderSteps($<HTMLOListElement>("detail-steps"), mergeEvents(rec.events, rec.overrides), rec.events, decide);
   $("library").hidden = true;
   $("detail").hidden = false;
 }

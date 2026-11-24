@@ -1,14 +1,18 @@
 import type { PageInventory } from "@d2a/shared";
 import { trackClipboard } from "./clipboard.js";
 import { type ExecRequest, handleExec } from "./executor.js";
-import { type ContentEvent, installRecorder } from "./recorder.js";
+import { type ContentEvent, type RecorderHandle, installRecorder } from "./recorder.js";
 
 const KEY = "recording";
 let recording = false;
 
-chrome.storage.session.get(KEY).then((r) => (recording = Boolean(r[KEY]))).catch(() => {});
+const setRecording = (value: boolean) => {
+  recording = value;
+  recorder?.recordingChanged();
+};
+chrome.storage.session.get(KEY).then((r) => setRecording(Boolean(r[KEY]))).catch(() => {});
 const onStorage = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-  if (area === "session" && KEY in changes) recording = Boolean(changes[KEY].newValue);
+  if (area === "session" && KEY in changes) setRecording(Boolean(changes[KEY].newValue));
 };
 chrome.storage.onChanged.addListener(onStorage);
 
@@ -17,7 +21,7 @@ function send(event: ContentEvent, inventory?: PageInventory) {
     chrome.runtime.sendMessage({ type: "contentEvent", event, inventory }).catch(() => {});
   } catch {
     // Extension was reloaded; this orphaned script can no longer reach it.
-    recording = false;
+    setRecording(false);
   }
 }
 
@@ -25,7 +29,7 @@ function send(event: ContentEvent, inventory?: PageInventory) {
 // reload may still be attached. The newest install replaces any previous one.
 const g = globalThis as { __d2aDisposeRecorder?: () => void };
 g.__d2aDisposeRecorder?.();
-const uninstall = installRecorder(() => recording, send);
+const recorder: RecorderHandle | undefined = installRecorder(() => recording, send);
 const clipboardAbort = new AbortController();
 const lastCopied = trackClipboard(clipboardAbort.signal);
 
@@ -42,7 +46,7 @@ const onExec = (req: ExecRequest, _sender: chrome.runtime.MessageSender, sendRes
 chrome.runtime.onMessage.addListener(onExec);
 
 g.__d2aDisposeRecorder = () => {
-  uninstall();
+  recorder.dispose();
   clipboardAbort.abort();
   try {
     chrome.storage.onChanged.removeListener(onStorage);
