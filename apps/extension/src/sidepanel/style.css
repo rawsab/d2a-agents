@@ -38,3 +38,15 @@ button:disabled { opacity: .5; cursor: default; }
 .recordings li:hover { background: var(--card); }
 .recordings .meta { color: var(--muted); font-size: 11px; }
 .empty { color: var(--muted); padding: 8px 0; }
+
+.recordings .actions { display: flex; gap: 4px; margin-top: 4px; }
+.items { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 2px; }
+.items li { display: grid; grid-template-columns: 16px 1fr; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.items .err { grid-column: 2; color: var(--danger); font-size: 11px; }
+.items .ok { color: var(--ok); }
+.items .failed { color: var(--danger); }
+.items .running { color: var(--accent); }
+.items .pending { color: var(--muted); }
+.log { list-style: none; padding: 0; margin: 4px 0 0; font: 11px/1.4 ui-monospace, monospace; color: var(--muted); max-height: 200px; overflow: auto; }
+.log .warn { color: #b7791f; }
+.log .error { color: var(--danger); }

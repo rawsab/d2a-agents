@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BrowserContext, chromium, type Worker } from "@playwright/test";
+import type { RunOptions, RunSnapshot, Workflow } from "@d2a/shared";
 
 const ROOT = join(import.meta.dirname, "..");
 /** Separate port and build so tests never touch a running dev server's data. */
@@ -18,7 +19,7 @@ export async function health(): Promise<{ ok: boolean; extensionConnected: boole
   }
 }
 
-async function until<T>(fn: () => Promise<T | undefined | false>, what: string, ms = 15_000): Promise<T> {
+export async function until<T>(fn: () => Promise<T | undefined | false>, what: string, ms = 15_000): Promise<T> {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     const v = await fn();
@@ -72,4 +73,31 @@ export async function launch() {
       await rm(tmp, { recursive: true, force: true });
     },
   };
+}
+
+/** Saves a workflow, starts a run, and waits for it to finish. */
+export async function runWorkflow(
+  workflow: Workflow,
+  options: Partial<RunOptions> = {},
+  onStart?: (run: RunSnapshot) => Promise<void>,
+  timeoutMs = 50_000,
+) {
+  const post = (path: string, body: unknown) =>
+    fetch(`${API}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const saved = await post("/workflows", workflow);
+  if (!saved.ok) throw new Error(`saving workflow failed: ${await saved.text()}`);
+  const started = await post(`/workflows/${workflow.id}/runs`, options);
+  if (!started.ok) throw new Error(`starting run failed: ${await started.text()}`);
+  const run = (await started.json()) as RunSnapshot;
+  await onStart?.(run);
+  const snapshot = async () => (await (await fetch(`${API}/runs/${run.id}`)).json()) as RunSnapshot;
+  try {
+    return await until(async () => {
+      const snap = await snapshot();
+      return snap.finishedAt ? snap : undefined;
+    }, "run to finish", timeoutMs);
+  } catch (err) {
+    const log = (await snapshot()).log.slice(-15).map((l) => `  ${l.level}: ${l.message}`).join("\n");
+    throw new Error(`${(err as Error).message}; last log:\n${log}`);
+  }
 }

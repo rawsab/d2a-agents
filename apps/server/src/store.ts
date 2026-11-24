@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { RecordedEvent, Recording } from "@d2a/shared";
+import type { RecordedEvent, Recording, RunSnapshot, Workflow } from "@d2a/shared";
 
 export class Store {
   private db: DatabaseSync;
@@ -15,6 +15,12 @@ export class Store {
         seq INTEGER NOT NULL,
         data TEXT NOT NULL,
         PRIMARY KEY (recording_id, seq)
+      );
+      CREATE TABLE IF NOT EXISTS workflows (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS screenshots (
         id TEXT PRIMARY KEY,
@@ -63,6 +69,44 @@ export class Store {
          FROM recordings r ORDER BY r.created_at DESC`,
       )
       .all() as { id: string; name: string; createdAt: number; eventCount: number }[];
+  }
+
+  saveWorkflow(wf: Workflow) {
+    this.db
+      .prepare(
+        `INSERT INTO workflows (id, name, data, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data`,
+      )
+      .run(wf.id, wf.name, JSON.stringify(wf), Date.now());
+  }
+
+  getWorkflow(id: string): Workflow | undefined {
+    const row = this.db.prepare("SELECT data FROM workflows WHERE id = ?").get(id) as { data: string } | undefined;
+    return row && JSON.parse(row.data);
+  }
+
+  listWorkflows() {
+    return this.db
+      .prepare("SELECT id, name, created_at AS createdAt FROM workflows ORDER BY created_at DESC")
+      .all() as { id: string; name: string; createdAt: number }[];
+  }
+
+  deleteWorkflow(id: string) {
+    return this.db.prepare("DELETE FROM workflows WHERE id = ?").run(id).changes > 0;
+  }
+
+  saveRun(run: RunSnapshot) {
+    this.db
+      .prepare(
+        `INSERT INTO runs (id, workflow_id, data, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+      )
+      .run(run.id, run.workflowId, JSON.stringify(run), run.startedAt);
+  }
+
+  getRun(id: string): RunSnapshot | undefined {
+    const row = this.db.prepare("SELECT data FROM runs WHERE id = ?").get(id) as { data: string } | undefined;
+    return row && JSON.parse(row.data);
   }
 
   deleteRecording(id: string) {

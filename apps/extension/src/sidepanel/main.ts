@@ -1,4 +1,11 @@
-import { type RecordedEvent, type Recording, type SemanticStep, describeStep, mergeEvents } from "@d2a/shared";
+import {
+  type RecordedEvent,
+  type Recording,
+  type RunSnapshot,
+  type SemanticStep,
+  describeStep,
+  mergeEvents,
+} from "@d2a/shared";
 import { API_URL as API } from "../config.js";
 type RecordingState = { id: string; name: string } | null;
 type Status = { connected: boolean; recording: RecordingState };
@@ -104,6 +111,96 @@ function closeDetail() {
   loadLibrary();
 }
 
+const ITEM_ICON: Record<string, string> = { ok: "✓", failed: "✗", running: "▸", pending: "·" };
+let runId: string | undefined;
+
+async function loadWorkflows() {
+  const list = $<HTMLUListElement>("workflow-list");
+  let rows: { id: string; name: string; createdAt: number }[];
+  try {
+    rows = await (await fetch(`${API}/workflows`)).json();
+  } catch {
+    return; // loadLibrary already shows the "start the server" hint
+  }
+  list.replaceChildren();
+  if (rows.length === 0) list.append(el("li", "empty", "No workflows yet. Try: pnpm fixtures:workflow"));
+  for (const wf of rows) {
+    const li = el("li");
+    const actions = el("div", "actions");
+    const dry = el("button", undefined, "Dry run (1 item)");
+    const full = el("button", "primary", "Run all");
+    dry.onclick = () => startRun(wf.id, { limit: 1 });
+    full.onclick = () => startRun(wf.id, {});
+    actions.append(dry, full);
+    li.append(el("div", undefined, wf.name), actions);
+    list.append(li);
+  }
+}
+
+async function startRun(workflowId: string, options: object) {
+  const res = await fetch(`${API}/workflows/${workflowId}/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(options),
+  });
+  const body = await res.json();
+  if (!res.ok) return alert(`Could not start: ${body.error}`);
+  runId = body.id;
+  renderRun(body);
+}
+
+function renderRun(run: RunSnapshot | null) {
+  $("run").hidden = !run;
+  if (!run) return;
+  const finished = Boolean(run.finishedAt);
+  const done = run.items.filter((i) => i.status === "ok" || i.status === "failed").length;
+  $("run-title").textContent = run.workflowName;
+  $("run-status").textContent =
+    `${run.status}${run.items.length ? ` · ${done}/${run.items.length} items` : ""}${run.error ? ` · ${run.error}` : ""}`;
+  const pause = $<HTMLButtonElement>("run-pause");
+  pause.textContent = run.status === "paused" ? "Resume" : "Pause";
+  pause.hidden = finished;
+  $<HTMLButtonElement>("run-stop").textContent = finished ? "Close" : "Stop";
+
+  const items = $<HTMLOListElement>("run-items");
+  items.replaceChildren();
+  for (const item of run.items) {
+    const li = el("li");
+    li.append(el("span", item.status, ITEM_ICON[item.status]), el("span", undefined, item.label));
+    if (item.error) li.append(el("span", "err", item.error));
+    items.append(li);
+  }
+  const log = $<HTMLOListElement>("run-log");
+  log.replaceChildren(...run.log.slice(-100).map((l) => el("li", l.level, `${new Date(l.ts).toLocaleTimeString()} ${l.message}`)));
+}
+
+async function pollRun() {
+  try {
+    const current = (await (await fetch(`${API}/runs/current`)).json()) as RunSnapshot | null;
+    if (current) runId = current.id;
+    if (!runId) return renderRun(null);
+    renderRun(current ?? ((await (await fetch(`${API}/runs/${runId}`)).json()) as RunSnapshot));
+  } catch {
+    // server offline; status line already says so
+  }
+}
+
+$("run-pause").onclick = async () => {
+  if (!runId) return;
+  const paused = $("run-pause").textContent === "Resume";
+  await fetch(`${API}/runs/${runId}/${paused ? "resume" : "pause"}`, { method: "POST" });
+  pollRun();
+};
+$("run-stop").onclick = async () => {
+  if (!runId) return;
+  if ($("run-stop").textContent === "Close") {
+    runId = undefined;
+    return renderRun(null);
+  }
+  await fetch(`${API}/runs/${runId}/stop`, { method: "POST" });
+  pollRun();
+};
+
 $("toggle").onclick = async () => {
   if (status.recording) {
     await chrome.runtime.sendMessage({ type: "stopRecording" });
@@ -118,7 +215,10 @@ $("toggle").onclick = async () => {
     await refreshStatus();
   }
 };
-$("refresh").onclick = loadLibrary;
+$("refresh").onclick = () => {
+  loadLibrary();
+  loadWorkflows();
+};
 $("back").onclick = closeDetail;
 $("delete").onclick = async () => {
   if (!openRecordingId || !confirm("Delete this recording?")) return;
@@ -134,4 +234,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 refreshStatus();
 loadLibrary();
+loadWorkflows();
+pollRun();
 setInterval(refreshStatus, 2000);
+setInterval(pollRun, 1000);

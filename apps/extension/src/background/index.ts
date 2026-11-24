@@ -1,18 +1,23 @@
 import { PROTOCOL_VERSION } from "@d2a/shared";
 import { WS_URL } from "../config.js";
 import { ServerConnection } from "./connection.js";
+import { Executor } from "./executor.js";
+import { injectIntoOpenTabs } from "./inject.js";
 import { Recorder } from "./recorder.js";
 
 const MAIN_WORLD_SCRIPT_ID = "d2a-mainworld";
 
 const conn = new ServerConnection(WS_URL);
 const recorder = new Recorder(conn);
+const executor = new Executor();
 
 conn.onMessage((msg) => {
-  if (msg.type === "command") {
-    // Executor arrives in milestone 3.
-    conn.send({ type: "commandResult", requestId: msg.requestId, ok: false, error: "not implemented" });
-  }
+  if (msg.type !== "command") return;
+  const { requestId } = msg;
+  executor.run(msg.command).then(
+    (result) => conn.send({ type: "commandResult", requestId, ok: true, result }),
+    (err) => conn.send({ type: "commandResult", requestId, ok: false, error: (err as Error).message ?? String(err) }),
+  );
 });
 conn.onOpen(() =>
   conn.send({ type: "hello", version: PROTOCOL_VERSION, extensionId: chrome.runtime.id }),
@@ -20,27 +25,6 @@ conn.onOpen(() =>
 conn.connect();
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
-
-/**
- * Declared content scripts only load into pages opened after the extension (re)loads, so
- * tabs that were already open get the recorder injected explicitly. Both scripts are idempotent.
- */
-async function injectIntoOpenTabs() {
-  const files = chrome.runtime.getManifest().content_scripts?.flatMap((cs) => cs.js ?? []) ?? [];
-  const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id === undefined) return;
-      const target = { tabId: tab.id };
-      try {
-        await chrome.scripting.executeScript({ target, files: ["mainworld.js"], world: "MAIN" });
-        await chrome.scripting.executeScript({ target, files });
-      } catch {
-        // Pages extensions can't script (Chrome Web Store, PDF viewer, discarded tabs).
-      }
-    }),
-  );
-}
 
 // Page-world clipboard hook (public/mainworld.js); registered dynamically because it must run in world MAIN.
 chrome.runtime.onInstalled.addListener(async () => {

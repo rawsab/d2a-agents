@@ -28,14 +28,17 @@
     <script>
       const dialog = document.getElementById("share-dialog");
       const shareUrl = document.getElementById("share-url");
-      for (const btn of document.querySelectorAll(".share")) {
-        btn.addEventListener("click", () => {
+      // ?slow=<ms> mimics sites that render buttons before their click handlers are attached.
+      const slow = Number(new URLSearchParams(location.search).get("slow") ?? 0);
+      const hydrate = () => {
+        for (const btn of document.querySelectorAll(".share")) btn.addEventListener("click", () => {
           // Like youtu.be links, the share URL differs from the item's href.
           const id = new URL(btn.previousElementSibling.href).searchParams.get("v");
           shareUrl.value = `${location.origin}/share/${id}`;
           dialog.showModal();
         });
-      }
+      };
+      slow ? setTimeout(hydrate, slow) : hydrate();
       document.getElementById("copy").addEventListener("click", async () => {
         await navigator.clipboard.writeText(shareUrl.value);
         dialog.close();

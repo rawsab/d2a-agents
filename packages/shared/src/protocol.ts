@@ -1,20 +1,65 @@
 import { z } from "zod";
-import { Fingerprint, RecordedEvent } from "./events.js";
+import { Fingerprint, PageInventory, RecordedEvent } from "./events.js";
+import { ListField } from "./workflow.js";
 
 export const SERVER_PORT = 7821;
 export const PROTOCOL_VERSION = 1;
 
+/** How the extension finds an element: fingerprint, optionally scoped to a container selector. */
+export const Locator = z.object({ fingerprint: Fingerprint, within: z.string().optional() });
+export type Locator = z.infer<typeof Locator>;
+
+const tab = { tabId: z.number() };
+
 /** Low-level commands the server asks the extension to execute. */
 export const Command = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("navigate"), tabId: z.number(), url: z.string() }),
   z.object({ op: z.literal("openTab"), url: z.string() }),
-  z.object({ op: z.literal("click"), tabId: z.number(), target: Fingerprint }),
-  z.object({ op: z.literal("fill"), tabId: z.number(), target: Fingerprint, value: z.string() }),
-  z.object({ op: z.literal("press"), tabId: z.number(), key: z.string(), target: Fingerprint.optional() }),
-  z.object({ op: z.literal("extract"), tabId: z.number(), target: Fingerprint, attr: z.string().optional() }),
-  z.object({ op: z.literal("snapshot"), tabId: z.number() }),
+  z.object({ op: z.literal("findTab"), urlPrefix: z.string() }),
+  z.object({ op: z.literal("activateTab"), ...tab }),
+  z.object({ op: z.literal("tabInfo"), ...tab }),
+  z.object({ op: z.literal("navigate"), ...tab, url: z.string() }),
+  z.object({ op: z.literal("click"), ...tab, locator: Locator }),
+  z.object({ op: z.literal("fill"), ...tab, locator: Locator, value: z.string() }),
+  z.object({ op: z.literal("press"), ...tab, key: z.string(), locator: Locator.optional() }),
+  z.object({ op: z.literal("probe"), ...tab, locator: Locator }),
+  z.object({ op: z.literal("extract"), ...tab, locator: Locator, attr: z.string().optional() }),
+  z.object({
+    op: z.literal("extractList"),
+    ...tab,
+    container: Locator.optional(),
+    itemSelector: z.string(),
+    fields: z.record(ListField),
+  }),
+  z.object({ op: z.literal("lastCopied"), ...tab }),
+  /** Waits for the page to finish whatever the last action started. */
+  z.object({ op: z.literal("settle"), ...tab }),
+  /** Detaches the debugger from the tab. */
+  z.object({ op: z.literal("release"), ...tab }),
+  z.object({ op: z.literal("snapshot"), ...tab }),
 ]);
 export type Command = z.infer<typeof Command>;
+export type CommandOf<K extends Command["op"]> = Extract<Command, { op: K }>;
+
+/** Each list item also carries its position and a unique selector, used by `within` targets. */
+export type ListItem = Record<string, string | number> & { _index: number; _selector: string };
+
+export type CommandResults = {
+  openTab: { tabId: number };
+  findTab: { tabId: number | null };
+  activateTab: null;
+  tabInfo: { url: string; title: string };
+  navigate: null;
+  click: null;
+  fill: null;
+  press: null;
+  probe: { found: boolean; text?: string; error?: string };
+  extract: string;
+  extractList: ListItem[];
+  lastCopied: { value: string; ts: number } | null;
+  settle: null;
+  release: null;
+  snapshot: PageInventory;
+};
 
 export const ExtensionToServer = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), version: z.number(), extensionId: z.string() }),

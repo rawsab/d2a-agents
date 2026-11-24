@@ -16,7 +16,7 @@ export const INTERACTIVE_SELECTOR = [
 
 const MAX_TEXT = 100;
 const MAX_HTML = 800;
-const TEST_ID_ATTRS = ["data-testid", "data-test", "data-test-id", "data-qa", "data-cy"];
+export const TEST_ID_ATTRS = ["data-testid", "data-test", "data-test-id", "data-qa", "data-cy"];
 
 /** The element a click "meant": clicks often land on an icon or span inside a button. */
 export function interactiveAncestor(el: Element): Element {
