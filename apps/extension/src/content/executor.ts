@@ -22,6 +22,8 @@ const MAX_TEXT = 2000;
 const norm = (s?: string) => s?.replace(/\s+/g, " ").trim().toLowerCase();
 
 function isVisible(el: Element): boolean {
+  // The page itself: sites like YouTube give <body> no height, but its text is still on screen.
+  if (el === document.body || el === document.documentElement) return true;
   if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
