@@ -1,0 +1,17 @@
+{
+  "name": "d2a-agents",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:server": "pnpm --filter @d2a/server dev",
+    "dev:extension": "pnpm --filter @d2a/extension dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@11.9.0"
+}
