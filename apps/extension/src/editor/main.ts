@@ -14,6 +14,39 @@ import {
   describeWorkflowStep,
   mergeEvents,
 } from "@d2a/shared";
+import {
+  AppWindow,
+  ArrowDown,
+  ArrowLeftRight,
+  ArrowUp,
+  ChevronDown,
+  Clipboard,
+  Crosshair,
+  Eye,
+  EyeOff,
+  Globe,
+  Hourglass,
+  type IconNode,
+  Keyboard,
+  ListTree,
+  Moon,
+  MousePointerClick,
+  PanelTopClose,
+  Plus,
+  Redo2,
+  Repeat,
+  ScanText,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Sun,
+  TextCursorInput,
+  Trash2,
+  TriangleAlert,
+  Undo2,
+  X,
+  createElement,
+} from "lucide";
 import { API_URL as API } from "../config.js";
 import {
   KIND_LABELS,
@@ -28,6 +61,7 @@ import {
   listNames,
   locate,
   moveStep,
+  moveStepTo,
   newId,
   pickedTarget,
   renameTab,
@@ -53,6 +87,39 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Attrs | string 
   return e;
 }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const icon = (node: IconNode) => createElement(node, { class: "lucide", "aria-hidden": "true" });
+
+function iconButton(node: IconNode, label: string, onClick: (e: Event) => void, cls = "icon-btn small"): HTMLButtonElement {
+  return h("button", { class: cls, type: "button", "aria-label": label, title: label, onclick: onClick }, icon(node));
+}
+
+const KIND_ICONS: Record<StepKind, IconNode> = {
+  navigate: Globe,
+  switchTab: ArrowLeftRight,
+  openTab: AppWindow,
+  closeTab: PanelTopClose,
+  click: MousePointerClick,
+  fill: TextCursorInput,
+  press: Keyboard,
+  waitFor: Hourglass,
+  extract: ScanText,
+  extractList: ListTree,
+  copyFromClipboard: Clipboard,
+  forEach: Repeat,
+  assert: ShieldCheck,
+};
+
+/** Placeholders for recorded steps that have no screenshot. */
+const REC_ICONS: Record<SemanticStep["kind"], IconNode> = {
+  openTab: AppWindow,
+  switchTab: ArrowLeftRight,
+  navigate: Globe,
+  click: MousePointerClick,
+  fill: TextCursorInput,
+  press: Keyboard,
+  copy: Clipboard,
+  submit: MousePointerClick,
+};
 
 async function api<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   const res = await fetch(`${API}${path}`, {
@@ -65,19 +132,106 @@ async function api<T>(path: string, init?: { method?: string; body?: unknown }):
   return body as T;
 }
 
+// ---- Theme: dark by default ----
+
+const THEME_KEY = "d2a-editor-theme";
+function applyTheme(theme: "dark" | "light") {
+  document.documentElement.dataset.theme = theme;
+  const button = $("theme");
+  button.replaceChildren(icon(theme === "dark" ? Sun : Moon));
+  const label = `Switch to ${theme === "dark" ? "light" : "dark"} theme`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+function storedTheme(): "dark" | "light" {
+  try {
+    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 // ---- State ----
+
+type PanelTab = "step" | "recording" | "settings";
 
 const workflowId = new URLSearchParams(location.search).get("id") ?? "";
 let saved: Workflow;
 let current: Workflow;
 let selected: string | undefined;
+let panelTab: PanelTab = "recording";
 let proposal: { id: string; workflow: Workflow; diff: StepDiff } | undefined;
 let recording: Recording | undefined;
 let recSteps = new Map<string, SemanticStep>();
 
+/** Undo history: earlier versions, and versions undone since the last edit. */
+let past: Workflow[] = [];
+let future: Workflow[] = [];
+/** Typing in one field becomes one undo step, not one per keystroke. */
+let typing: { key: string; at: number } | undefined;
+const TYPING_MERGE_MS = 1500;
+
 const dirty = () => JSON.stringify(current) !== JSON.stringify(saved);
 /** The version shown: Claude's proposal while one is open, else the one being edited. */
 const shown = () => proposal?.workflow ?? current;
+
+/** Records an edit. `typing` merges consecutive edits of one field into one undo step. */
+function change(next: Workflow, opts: { typing?: string; full?: boolean } = {}) {
+  const now = Date.now();
+  const merge = opts.typing && typing?.key === opts.typing && now - typing.at < TYPING_MERGE_MS;
+  if (!merge) {
+    past.push(current);
+    if (past.length > 200) past.shift();
+  }
+  typing = opts.typing ? { key: opts.typing, at: now } : undefined;
+  future = [];
+  current = next;
+  if (opts.full) render();
+  else refresh();
+}
+
+function undo() {
+  const prev = past.pop();
+  if (!prev || proposal) return;
+  future.push(current);
+  current = prev;
+  typing = undefined;
+  if (selected && !locate(current.steps, selected)) selected = undefined;
+  render();
+}
+
+function redo() {
+  const next = future.pop();
+  if (!next || proposal) return;
+  past.push(current);
+  current = next;
+  typing = undefined;
+  render();
+}
+
+/** The current version of a step, by id (inputs must never edit a stale copy). */
+function stepById(id: string): Step | undefined {
+  const loc = locate(current.steps, id);
+  return loc?.container[loc.index];
+}
+
+function patchStep(id: string, fn: (s: Step) => Step, opts: { typing?: string; full?: boolean } = {}) {
+  const step = stepById(id);
+  if (step) change(replaceStep(current, fn(step)), opts);
+}
+
+// ---- Toasts ----
+
+function toast(message: string, opts: { action?: { label: string; run: () => void }; bad?: boolean } = {}) {
+  const el = h("div", { class: `toast ${opts.bad ? "bad" : ""}`, role: "status" }, h("span", {}, message));
+  const dismiss = () => el.remove();
+  if (opts.action) {
+    const { label, run } = opts.action;
+    el.append(h("button", { class: "btn small", type: "button", onclick: () => (run(), dismiss()) }, label));
+  }
+  $("toasts").append(el);
+  setTimeout(dismiss, opts.bad ? 8000 : 5000);
+}
 
 // ---- What the recording saw at a step ----
 
@@ -119,15 +273,12 @@ function bboxOf(target: Target): Fingerprint["bbox"] {
   return "target" in view.step ? view.step.target?.bbox : undefined;
 }
 
-type Box = {
-  bbox: NonNullable<Fingerprint["bbox"]>;
-  cls?: string;
-  title?: string;
-  onClick?: () => void;
-  onHover?: (on: boolean) => void;
-  /** Called with the box element once it is placed (after the image loads, for older recordings). */
-  placed?: (box: HTMLElement) => void;
-};
+/** The element a step acted on in its own recorded step, for crops. */
+function stepBox(step: Step, view: View): Fingerprint["bbox"] {
+  const target = "target" in step ? step.target : undefined;
+  if (target?.source?.step === view.stepId) return bboxOf(target);
+  return "target" in view.step ? view.step.target?.bbox : undefined;
+}
 
 /**
  * Size of the screenshot in the page's CSS pixels. A screenshot covers the visible part of the tab,
@@ -144,16 +295,59 @@ function onLoaded(img: HTMLImageElement, fn: () => void) {
   else img.addEventListener("load", fn, { once: true });
 }
 
-/** A recorded screenshot with element boxes drawn on it, positioned in % so it scales with the image. */
+/**
+ * A crop of a screenshot around an element (or the top of the page), with the element outlined.
+ * `minWidth` is how much of the page, in CSS pixels, the crop shows at least.
+ */
+function crop(view: View, bbox: Fingerprint["bbox"], cls: string, minWidth: number): HTMLElement {
+  const frame = h("div", cls);
+  const img = h("img", { src: `${API}/screenshots/${view.screenshotId}`, alt: "", draggable: false });
+  frame.append(img);
+  const place = () => {
+    const fw = frame.clientWidth;
+    const fh = frame.clientHeight;
+    if (!fw || !fh) return void requestAnimationFrame(place);
+    const page = pageSize(img, view);
+    const rw = Math.min(page.w, Math.max(minWidth, (bbox?.w ?? 0) * 3));
+    const rh = (rw * fh) / fw;
+    const cx = bbox ? bbox.x + bbox.w / 2 : rw / 2;
+    const cy = bbox ? bbox.y + bbox.h / 2 : rh / 2;
+    const rx = Math.max(0, Math.min(cx - rw / 2, page.w - rw));
+    const ry = Math.max(0, Math.min(cy - rh / 2, page.h - rh));
+    const scale = fw / rw;
+    Object.assign(img.style, { width: `${page.w * scale}px`, left: `${-rx * scale}px`, top: `${-ry * scale}px` });
+    if (bbox) {
+      const pad = 3;
+      const box = h("div", "box");
+      Object.assign(box.style, {
+        left: `${(bbox.x - rx) * scale - pad}px`, top: `${(bbox.y - ry) * scale - pad}px`,
+        width: `${bbox.w * scale + pad * 2}px`, height: `${bbox.h * scale + pad * 2}px`,
+      });
+      frame.append(box);
+    }
+  };
+  onLoaded(img, () => requestAnimationFrame(place));
+  return frame;
+}
+
+type Box = {
+  bbox: NonNullable<Fingerprint["bbox"]>;
+  title?: string;
+  onClick?: () => void;
+  onHover?: (on: boolean) => void;
+  placed?: (box: HTMLElement) => void;
+};
+
+/** A whole screenshot with clickable element boxes, positioned in % so it scales with the image. */
 function screenshot(view: View, boxes: Box[]): HTMLElement {
   const wrap = h("div", "shot");
-  const img = h("img", { src: `${API}/screenshots/${view.screenshotId}`, alt: "" });
+  const img = h("img", { src: `${API}/screenshots/${view.screenshotId}`, alt: "", draggable: false });
   wrap.append(img);
   onLoaded(img, () => {
     const { w, h: ph } = pageSize(img, view);
     for (const b of boxes) {
       if (b.bbox.y >= ph || b.bbox.x >= w) continue; // outside what the screenshot shows
-      const box = h("div", { class: `box ${b.cls ?? ""}`, title: b.title, onclick: b.onClick, onmouseenter: () => b.onHover?.(true), onmouseleave: () => b.onHover?.(false) });
+      const box = h("div", { class: "box", title: b.title, onclick: b.onClick, onmouseenter: () => b.onHover?.(true), onmouseleave: () => b.onHover?.(false) });
       Object.assign(box.style, {
         left: `${(b.bbox.x / w) * 100}%`, top: `${(b.bbox.y / ph) * 100}%`,
         width: `${(b.bbox.w / w) * 100}%`, height: `${(b.bbox.h / ph) * 100}%`,
@@ -165,31 +359,45 @@ function screenshot(view: View, boxes: Box[]): HTMLElement {
   return wrap;
 }
 
-const THUMB = { w: 96, h: 56 };
+// ---- Step titles ----
 
-/** A small crop of a screenshot around an element (or the top of the page), so a card shows what it acts on. */
-function thumbnail(view: View, bbox: Fingerprint["bbox"]): HTMLElement {
-  const frame = h("div", "thumb");
-  const img = h("img", { src: `${API}/screenshots/${view.screenshotId}`, alt: "" });
-  frame.append(img);
-  onLoaded(img, () => {
-    const page = pageSize(img, view);
-    // Show the element with some of what surrounds it.
-    const rw = Math.min(page.w, Math.max(320, (bbox?.w ?? 0) * 4));
-    const rh = (rw * THUMB.h) / THUMB.w;
-    const cx = bbox ? bbox.x + bbox.w / 2 : rw / 2;
-    const cy = bbox ? bbox.y + bbox.h / 2 : rh / 2;
-    const rx = Math.max(0, Math.min(cx - rw / 2, page.w - rw));
-    const ry = Math.max(0, Math.min(cy - rh / 2, page.h - rh));
-    const scale = THUMB.w / rw;
-    Object.assign(img.style, { width: `${page.w * scale}px`, left: `${-rx * scale}px`, top: `${-ry * scale}px` });
-    if (bbox) {
-      const box = h("div", "box");
-      Object.assign(box.style, { left: `${(bbox.x - rx) * scale}px`, top: `${(bbox.y - ry) * scale}px`, width: `${bbox.w * scale}px`, height: `${bbox.h * scale}px` });
-      frame.append(box);
+const code = (s: string) => h("code", {}, s);
+const el = (s: string) => h("span", "el", s);
+
+/** A readable title: plain verbs, elements as tokens, values and variables as code. */
+function titleOf(step: Step): Child[] {
+  switch (step.kind) {
+    case "navigate":
+      return ["Go to ", step.url ? code(step.url) : "…"];
+    case "switchTab":
+      return ["Switch to the ", el(step.role), " tab"];
+    case "openTab":
+      return ["Open ", el(step.role), " at ", step.url ? code(step.url) : "…"];
+    case "closeTab":
+      return ["Close the ", el(step.role), " tab"];
+    case "click":
+      return ["Click ", el(step.target.description), step.opensTab && " to open ", step.opensTab && el(step.opensTab)];
+    case "fill":
+      return ["Fill ", el(step.target.description), " with ", step.value ? code(step.value) : "nothing"];
+    case "press":
+      return ["Press ", h("kbd", {}, step.key || "…"), step.target && " in ", step.target && el(step.target.description)];
+    case "waitFor": {
+      const element = step.target && step.target.fingerprint.css !== "body" ? step.target.description : undefined;
+      if (step.textIncludes) return ["Wait for ", code(step.textIncludes), element && " in ", element && el(element)];
+      if (element) return ["Wait for ", el(element)];
+      return ["Wait for the URL to match ", code(step.urlMatches ?? "…")];
     }
-  });
-  return frame;
+    case "extract":
+      return ["Read ", el(step.target.description), " into ", code(step.name)];
+    case "extractList":
+      return ["Collect ", code(step.name), " from ", code(step.itemSelector || "…")];
+    case "copyFromClipboard":
+      return ["Save the copied value as ", code(step.name)];
+    case "forEach":
+      return ["For each ", code(step.as), " in ", code(step.list || "…")];
+    case "assert":
+      return ["Check ", step.condition || "…"];
+  }
 }
 
 // ---- Rendering ----
@@ -197,50 +405,54 @@ function thumbnail(view: View, bbox: Fingerprint["bbox"]): HTMLElement {
 function render() {
   renderBar();
   renderProposal();
-  renderProblems();
-  renderSettings();
-  renderTimeline();
-  renderInspector();
+  renderRail();
+  renderPanel();
 }
 
-/** After a field edit: everything but the inspector, so the input being typed in keeps focus. */
+/** After a field edit: everything but the panel, so the input being typed in keeps focus. */
 function refresh() {
   renderBar();
-  renderProblems();
-  renderTimeline();
-}
-
-function setWorkflow(next: Workflow, full = false) {
-  current = next;
-  if (full) render();
-  else refresh();
+  renderRail();
 }
 
 function renderBar() {
   const name = $<HTMLInputElement>("name");
   if (document.activeElement !== name) name.value = shown().name;
   name.disabled = Boolean(proposal);
-  const problems = checkWorkflow(current).length;
   const state = $("state");
-  state.textContent = dirty() ? "Unsaved changes" : "Saved";
-  if (problems) state.textContent += ` · ${problems} problem${problems > 1 ? "s" : ""}`;
-  state.classList.toggle("dirty", dirty());
+  state.textContent = proposal ? "Reviewing a proposal" : dirty() ? "Unsaved changes" : "Saved";
+  state.classList.toggle("dirty", dirty() && !proposal);
+  const problems = checkWorkflow(current);
+  const pill = $("problems-pill");
+  pill.hidden = problems.length === 0 || Boolean(proposal);
+  pill.replaceChildren(icon(TriangleAlert), `${problems.length} problem${problems.length === 1 ? "" : "s"}`);
+  pill.title = "Go to the first problem";
   $<HTMLButtonElement>("save").disabled = !dirty() || Boolean(proposal);
-  $("revert").hidden = !dirty() || Boolean(proposal);
-  $("ask").hidden = Boolean(proposal);
+  $<HTMLButtonElement>("undo").disabled = past.length === 0 || Boolean(proposal);
+  $<HTMLButtonElement>("redo").disabled = future.length === 0 || Boolean(proposal);
   for (const id of ["dry", "run"]) $<HTMLButtonElement>(id).disabled = Boolean(proposal);
+  $("composer").hidden = Boolean(proposal);
 }
 
 function renderProposal() {
   $("proposal").hidden = !proposal;
   if (!proposal) return;
+  const statuses = [...proposal.diff.status.values()];
+  const added = statuses.filter((s) => s === "added").length;
+  const changed = statuses.filter((s) => s === "changed").length;
+  const removed = proposal.diff.removed.length;
+  $("proposal-counts").replaceChildren(
+    added ? h("span", "add", `${added} added`) : "",
+    changed ? h("span", "chg", `${changed} changed`) : "",
+    removed ? h("span", "del", `${removed} removed`) : "",
+    !added && !changed && !removed ? "No step changes" : "",
+  );
   const notes = proposal.workflow.notes;
   $("proposal-summary").textContent = notes?.summary ?? "";
-  const list = $("proposal-notes");
-  list.replaceChildren(
-    ...(notes?.problems ?? []).map((p) => h("li", "problem", `Problem: ${p}`)),
-    ...(notes?.assumptions ?? []).map((a) => h("li", {}, `Assumed: ${a}`)),
-    ...(notes?.questions ?? []).map((q) => h("li", {}, `Question: ${q}`)),
+  $("proposal-notes").replaceChildren(
+    ...(notes?.problems ?? []).map((p) => h("li", "problem", p)),
+    ...(notes?.questions ?? []).map((q) => h("li", {}, q)),
+    ...(notes?.assumptions ?? []).map((a) => h("li", {}, a)),
   );
 }
 
@@ -250,294 +462,427 @@ function problemsByStep(): Map<string, WorkflowProblem[]> {
   return map;
 }
 
-function renderProblems() {
-  const list = $("problems");
-  list.replaceChildren(
-    ...checkWorkflow(shown()).map((p) =>
-      h("li", { onclick: () => p.stepId && select(p.stepId) }, p.stepId ? `${stepLabel(p.stepId)}: ${p.message}` : p.message),
-    ),
-  );
-}
-
-function stepLabel(id: string): string {
-  const i = allSteps(shown().steps).findIndex((s) => s.id === id);
-  return i === -1 ? id : `Step ${i + 1}`;
-}
-
-function renderSettings() {
-  const body = $("settings-body");
+function renderRail() {
   const wf = shown();
-  const locked = Boolean(proposal);
-  const tabs = h("div", "tabs");
-  for (const [role, tab] of Object.entries(wf.tabs)) {
-    const roleInput = h("input", { value: role, disabled: locked, "aria-label": "Tab name" });
-    roleInput.onchange = () => {
-      const to = roleInput.value.trim();
-      if (!to || to === role || to in current.tabs) return void (roleInput.value = role);
-      setWorkflow(renameTab(current, role, to), true);
-    };
-    const url = h("input", { value: tab.startUrl ?? "", placeholder: "Opened by a step (no start URL)", disabled: locked, "aria-label": `${role} start URL` });
-    url.oninput = () => setWorkflow({ ...current, tabs: { ...current.tabs, [role]: url.value.trim() ? { startUrl: url.value.trim() } : {} } });
-    const remove = h("button", { class: "ghost small danger", disabled: locked || Object.keys(wf.tabs).length < 2, title: "Remove tab" }, "✕");
-    remove.onclick = () => {
-      const { [role]: _, ...rest } = current.tabs;
-      setWorkflow({ ...current, tabs: rest }, true);
-    };
-    tabs.append(roleInput, url, remove);
-  }
-  const add = h("button", { class: "small", disabled: locked }, "Add tab");
-  add.onclick = () => {
-    let n = Object.keys(current.tabs).length + 1;
-    while (`tab${n}` in current.tabs) n++;
-    setWorkflow({ ...current, tabs: { ...current.tabs, [`tab${n}`]: {} } }, true);
-  };
-  const popups = h("input", { type: "checkbox", checked: Boolean(wf.closePopups), disabled: locked, id: "close-popups" });
-  popups.onchange = () => {
-    const { closePopups: _, ...rest } = current;
-    setWorkflow(popups.checked ? { ...rest, closePopups: true } : rest);
-  };
-  body.replaceChildren(
-    tabs,
-    h("div", "row", add),
-    h("p", "row", popups, h("label", { htmlFor: "close-popups" }, "Close tabs that pages open on other sites (ads) while it runs")),
-  );
-}
-
-function renderTimeline() {
-  const wf = shown();
-  const list = $<HTMLOListElement>("steps");
+  const rail = $<HTMLOListElement>("steps");
   const problems = problemsByStep();
-  let n = 0;
-  const cards = (steps: Step[], loop?: string): HTMLElement[] =>
-    steps.map((step) => {
-      n++;
-      const card = stepCard(step, n, problems.get(step.id));
-      if (step.kind !== "forEach") return h("li", {}, card);
-      const body = h("ol", {}, ...cards(step.body, step.id));
-      if (!proposal) body.append(h("li", {}, addMenu("Add a step to the loop", (kind) => add(kind, { loop: step.id }), true)));
-      return h("li", "loop", card, body);
+  const editable = !proposal;
+
+  const nodes = (steps: Step[], loop?: string): HTMLElement[] => {
+    const out: HTMLElement[] = [];
+    if (loop && editable) out.push(gap({ after: null, loop }));
+    steps.forEach((step, i) => {
+      const card = stepCard(step, problems.get(step.id));
+      const dot = h("div", "dot", icon(KIND_ICONS[step.kind]));
+      const status = proposal?.diff.status.get(step.id);
+      const cls = ["node", step.kind === "forEach" && "loop", selected === step.id && "selected", status !== "unchanged" && status].filter(Boolean).join(" ");
+      const node = h("li", { class: cls, "data-step": step.id }, dot, card);
+      if (step.kind === "forEach") {
+        const branch = h("ol", "branch", ...nodes(step.body, step.id));
+        if (editable) branch.append(endButton("Add a step to the loop", true, step.id));
+        node.append(branch);
+      }
+      out.push(node);
+      if (editable && i < steps.length - 1) out.push(gap({ after: step.id }));
     });
-  list.replaceChildren(...cards(wf.steps));
-  if (!proposal) list.append(h("li", {}, addMenu("Add a step", (kind) => add(kind, {}))));
+    return out;
+  };
+
+  rail.replaceChildren(...nodes(wf.steps));
+  if (wf.steps.length === 0) {
+    rail.append(h("li", "empty-state", h("strong", {}, "No steps yet"), "Add one below, or ask Claude above."));
+  }
+  if (editable) rail.append(endButton("Add a step", false));
   if (proposal?.diff.removed.length) {
-    list.append(
-      h("li", "removed-title", "Removed"),
-      ...proposal.diff.removed.map((step) => h("li", {}, stepCard(step, undefined, undefined, "removed"))),
-    );
+    rail.append(h("li", "rail-title", "Removed"));
+    for (const step of proposal.diff.removed) {
+      rail.append(h("li", "node removed", h("div", "dot", icon(KIND_ICONS[step.kind])), stepCard(step, undefined, "removed")));
+    }
   }
 }
 
-function stepCard(step: Step, n: number | undefined, problems?: WorkflowProblem[], forced?: "removed"): HTMLElement {
+/** The "+" between two steps. */
+function gap(where: { after: string | null; loop?: string }): HTMLElement {
+  const li = h("li", "gap");
+  const button = h("button", { type: "button", "aria-label": "Insert a step here", title: "Insert a step here" }, icon(Plus));
+  button.onclick = () => {
+    li.classList.add("open");
+    const inLoop = Boolean(where.loop) || Boolean(where.after && locate(current.steps, where.after)?.loop);
+    openMenu(button, inLoop, (kind) => add(kind, where), () => li.classList.remove("open"));
+  };
+  li.append(button);
+  return li;
+}
+
+function endButton(label: string, inLoop: boolean, loop?: string): HTMLElement {
+  const button = h("button", { type: "button" }, icon(Plus), label);
+  button.onclick = () => openMenu(button, inLoop, (kind) => add(kind, { after: null, loop, append: true }));
+  return h("li", "gap end", button);
+}
+
+function stepCard(step: Step, problems?: WorkflowProblem[], forced?: "removed"): HTMLElement {
   const status = forced ?? proposal?.diff.status.get(step.id);
   const view = viewOf(ownSource(step));
-  const card = h("div", { class: `card ${status && status !== "unchanged" ? status : ""} ${selected === step.id ? "selected" : ""}`, "data-step": step.id });
+  const editable = !proposal && !forced;
+  const card = h("div", { class: "card" });
   card.onclick = () => select(step.id);
+
   const before = status === "changed" ? proposal?.diff.before.get(step.id) : undefined;
-  const wasText = before && describeWorkflowStep(before) !== describeWorkflowStep(step) ? describeWorkflowStep(before) : undefined;
-  const main = h(
+  const wasText = before && describeWorkflowStep(before) !== describeWorkflowStep(step) ? `was: ${describeWorkflowStep(before)}` : undefined;
+  const meta = h(
     "div",
-    {},
-    h("div", "kind", KIND_LABELS[step.kind], status && status !== "unchanged" && h("span", "badge", status)),
-    h("div", "desc", describeWorkflowStep(step)),
-    wasText && h("div", "was", wasText),
-    ...(problems ?? []).map((p) => h("div", "warn", `⚠ ${p.message}`)),
+    "meta",
+    step.tab && h("span", {}, `in ${step.tab}`),
+    status && status !== "unchanged" && h("span", "tag", status === "added" ? "Added" : status === "changed" ? "Changed" : "Removed"),
+    wasText && h("span", "was", wasText),
+    ...(problems ?? []).map((p) => h("span", "problem", icon(TriangleAlert), p.message)),
   );
-  const side = h("div", "side");
-  if (!proposal && !forced) {
-    const move = (dir: -1 | 1) => (e: Event) => {
-      e.stopPropagation();
-      setWorkflow(moveStep(current, step.id, dir), true);
-    };
-    const remove = (e: Event) => {
-      e.stopPropagation();
-      if (step.kind === "forEach" && step.body.length && !confirm(`Delete the loop and its ${step.body.length} steps?`)) return;
-      if (selected === step.id) selected = undefined;
-      setWorkflow(deleteStep(current, step.id), true);
-    };
-    side.append(
-      h("div", "moves",
-        h("button", { class: "ghost small", title: "Move up", "aria-label": "Move up", onclick: move(-1) }, "↑"),
-        h("button", { class: "ghost small", title: "Move down", "aria-label": "Move down", onclick: move(1) }, "↓"),
-        h("button", { class: "ghost small danger", title: "Delete", "aria-label": "Delete", onclick: remove }, "✕"),
+  const right = h("div", "right");
+  if (editable) {
+    right.append(
+      h("div", "actions",
+        iconButton(ArrowUp, "Move up", (e) => (e.stopPropagation(), move(step.id, -1))),
+        iconButton(ArrowDown, "Move down", (e) => (e.stopPropagation(), move(step.id, 1))),
+        iconButton(Trash2, "Delete", (e) => (e.stopPropagation(), remove(step.id)), "icon-btn small danger"),
       ),
     );
+    makeDraggable(card, step.id);
   }
-  const target = "target" in step ? step.target : undefined;
-  if (view?.screenshotId) side.append(thumbnail(view, target && target.source?.step === view.stepId ? bboxOf(target) : undefined));
-  card.append(h("div", "num", n === undefined ? "" : String(n)), main, side);
+  if (view?.screenshotId) right.append(crop(view, stepBox(step, view), "thumb", 360));
+  card.append(h("div", {}, h("div", "title", ...titleOf(step)), meta.childElementCount ? meta : undefined), right);
   return card;
 }
 
-function addMenu(label: string, onPick: (kind: StepKind) => void, inLoop = false): HTMLElement {
-  const sel = h("select", { "aria-label": label }, h("option", { value: "" }, `+ ${label}…`));
-  for (const [kind, text] of Object.entries(KIND_LABELS)) {
-    if (inLoop && kind === "forEach") continue;
-    sel.append(h("option", { value: kind }, text));
-  }
-  sel.onchange = () => {
-    const kind = sel.value as StepKind;
-    sel.value = "";
-    if (kind) onPick(kind);
+// ---- Drag and drop ----
+
+let dragging: string | undefined;
+
+function makeDraggable(card: HTMLElement, id: string) {
+  card.draggable = true;
+  const node = () => card.closest(".node");
+  card.ondragstart = (e) => {
+    e.stopPropagation(); // a step inside a loop, not the loop
+    dragging = id;
+    e.dataTransfer?.setData("text/plain", id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    requestAnimationFrame(() => node()?.classList.add("dragging"));
   };
-  return h("div", "add", sel);
+  card.ondragend = () => {
+    dragging = undefined;
+    node()?.classList.remove("dragging");
+    document.querySelectorAll(".drop-before, .drop-after").forEach((c) => c.classList.remove("drop-before", "drop-after"));
+  };
+  const position = (e: DragEvent) => {
+    const r = card.getBoundingClientRect();
+    return e.clientY < r.top + r.height / 2 ? "before" : "after";
+  };
+  card.ondragover = (e) => {
+    if (!dragging || dragging === id) return;
+    e.preventDefault();
+    const pos = position(e);
+    card.classList.toggle("drop-before", pos === "before");
+    card.classList.toggle("drop-after", pos === "after");
+  };
+  card.ondragleave = () => card.classList.remove("drop-before", "drop-after");
+  card.ondrop = (e) => {
+    e.preventDefault();
+    card.classList.remove("drop-before", "drop-after");
+    if (!dragging || dragging === id) return;
+    const next = moveStepTo(current, dragging, id, position(e));
+    if (JSON.stringify(next) !== JSON.stringify(current)) change(next, { full: true });
+  };
 }
 
-function add(kind: StepKind, where: { after?: string; loop?: string }) {
+// ---- Edits ----
+
+function move(id: string, dir: -1 | 1) {
+  change(moveStep(current, id, dir), { full: true });
+  document.querySelector<HTMLElement>(`[data-step="${CSS.escape(id)}"] > .card`)?.scrollIntoView({ block: "nearest" });
+}
+
+function remove(id: string) {
+  const step = stepById(id);
+  if (!step) return;
+  const i = allSteps(current.steps).findIndex((s) => s.id === id);
+  if (selected === id) {
+    // Keep the keyboard flow going: select what takes its place.
+    const after = allSteps(deleteStep(current, id).steps).map((s) => s.id);
+    selected = after[Math.min(i, after.length - 1)];
+  }
+  change(deleteStep(current, id), { full: true });
+  const what = step.kind === "forEach" && step.body.length ? `Loop and its ${step.body.length} steps deleted` : "Step deleted";
+  toast(what, { action: { label: "Undo", run: undo } });
+}
+
+function add(kind: StepKind, where: { after: string | null; loop?: string; append?: boolean }) {
   const step = blankStep(kind, newId(current), current);
-  current = where.after ? insertStep(current, step, where.after) : appendStep(current, step, where.loop);
+  const next = where.append ? appendStep(current, step, where.loop) : insertStep(current, step, where.after, where.loop);
   selected = step.id;
-  render();
+  panelTab = "step";
+  change(next, { full: true });
   // A new step on an element starts by choosing the element.
-  if ("target" in step && step.target) openPicker(step, step.target, (t) => updateStep({ ...step, target: t } as Step, true));
+  if ("target" in step && step.target) {
+    openPicker(step, step.target, (t) => patchStep(step.id, (s) => ({ ...s, target: t }) as Step, { full: true }));
+  } else {
+    requestAnimationFrame(() => $("panel-body").querySelector<HTMLElement>(".fields input, .fields select")?.focus());
+  }
 }
 
-function select(id: string) {
+function select(id: string | undefined) {
   selected = id;
-  renderTimeline();
-  renderInspector();
-  document.querySelector(`[data-step="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" });
+  if (id) panelTab = "step";
+  renderRail();
+  renderPanel();
+  if (id) document.querySelector(`[data-step="${CSS.escape(id)}"] > .card`)?.scrollIntoView({ block: "nearest" });
 }
 
-function updateStep(step: Step, full = false) {
-  current = replaceStep(current, step);
-  if (full) render();
-  else refresh();
+// ---- Add-step menu ----
+
+let closeMenu: (() => void) | undefined;
+
+function openMenu(anchor: HTMLElement, inLoop: boolean, onPick: (kind: StepKind) => void, onClose?: () => void) {
+  closeMenu?.();
+  const menu = $("menu");
+  const kinds = (Object.keys(KIND_LABELS) as StepKind[]).filter((k) => !(inLoop && k === "forEach"));
+  const search = h("input", { type: "text", placeholder: "Add a step…", "aria-label": "Search step types" });
+  const list = h("ul", { role: "listbox", "aria-label": "Step types" });
+  let matches: StepKind[] = kinds;
+  let active = 0;
+  /** Moves the highlight without rebuilding the list (rebuilding under the pointer makes it flicker). */
+  const highlight = () => {
+    [...list.children].forEach((li, i) => {
+      li.classList.toggle("active", i === active);
+      li.setAttribute("aria-selected", String(i === active));
+      if (i === active) li.scrollIntoView({ block: "nearest" });
+    });
+  };
+  const draw = () => {
+    list.replaceChildren(
+      ...matches.map((kind, i) =>
+        h("li", { role: "option", onclick: () => pick(kind), onmouseenter: () => ((active = i), highlight()) }, icon(KIND_ICONS[kind]), KIND_LABELS[kind]),
+      ),
+    );
+    highlight();
+  };
+  const close = () => {
+    menu.hidden = true;
+    menu.replaceChildren();
+    document.removeEventListener("mousedown", outside, true);
+    closeMenu = undefined;
+    onClose?.();
+  };
+  const pick = (kind: StepKind) => {
+    close();
+    onPick(kind);
+  };
+  const outside = (e: MouseEvent) => {
+    if (!menu.contains(e.target as Node)) close();
+  };
+  search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    matches = kinds.filter((k) => KIND_LABELS[k].toLowerCase().includes(q));
+    active = 0;
+    draw();
+  };
+  search.onkeydown = (e) => {
+    if (e.key === "ArrowDown") active = Math.min(active + 1, matches.length - 1);
+    else if (e.key === "ArrowUp") active = Math.max(active - 1, 0);
+    else if (e.key === "Enter" && matches[active]) return pick(matches[active]);
+    else if (e.key === "Escape") return close();
+    else return;
+    e.preventDefault();
+    highlight();
+  };
+  menu.replaceChildren(search, list);
+  draw();
+  menu.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const top = r.bottom + 6 + menu.offsetHeight > innerHeight ? Math.max(8, r.top - 6 - menu.offsetHeight) : r.bottom + 6;
+  Object.assign(menu.style, { left: `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`, top: `${top}px` });
+  document.addEventListener("mousedown", outside, true);
+  closeMenu = close;
+  search.focus();
 }
 
-// ---- Inspector ----
+// ---- Panel ----
 
-function renderInspector() {
-  const pane = $("inspector");
+function renderPanel() {
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".tabs button")) {
+    b.setAttribute("aria-selected", String(b.dataset.tab === panelTab));
+  }
+  const body = $("panel-body");
+  if (panelTab === "recording") return void body.replaceChildren(...recordingPanel());
+  if (panelTab === "settings") return void body.replaceChildren(...settingsPanel());
   const loc = selected ? locate(shown().steps, selected) : undefined;
-  if (!loc) return pane.replaceChildren(...recordingPanel());
-  const step = loc.container[loc.index];
-  const locked = Boolean(proposal);
-  const back = h("button", { class: "ghost small", onclick: () => ((selected = undefined), renderTimeline(), renderInspector()) }, "← Recording");
-  const header = h("div", {}, h("div", "row", back), h("h2", {}, KIND_LABELS[step.kind]), h("p", "hint", `${stepLabel(step.id)} · id ${step.id}`));
-  if (locked) {
-    const before = proposal!.diff.before.get(step.id);
-    return pane.replaceChildren(
-      header,
-      h("h3", {}, "After"), h("p", {}, describeWorkflowStep(step)),
-      h("h3", {}, "Before"), h("p", {}, before ? describeWorkflowStep(before) : "(new step)"),
+  if (!loc) {
+    return void body.replaceChildren(
+      h("p", { class: "panel-title", style: "margin-top:0" }, "Select a step to edit it."),
+      section("Shortcuts", shortcuts()),
     );
   }
-  pane.replaceChildren(header, ...stepFields(step, loc.loop?.as), stepActions(step, Boolean(loc.loop)));
+  const step = loc.container[loc.index];
+  const head = h("div", "panel-head", h("div", "dot", icon(KIND_ICONS[step.kind])), h("h2", {}, KIND_LABELS[step.kind]), h("span", "id", step.id));
+  if (proposal) {
+    const before = proposal.diff.before.get(step.id);
+    return void body.replaceChildren(
+      head,
+      h("div", "section readonly", h("h3", {}, "After"), h("p", {}, ...titleOf(step))),
+      h("div", "section readonly", h("h3", {}, "Before"), before ? h("p", "was", ...titleOf(before)) : h("p", "help", "This step is new.")),
+    );
+  }
+  body.replaceChildren(head, ...stepFields(step, loc.loop?.as), stepActions(step));
 }
 
-/** A labelled input bound to one field of the step. */
-function textField(label: string, value: string | number | undefined, onChange: (v: string) => void, opts: { placeholder?: string; type?: string; multiline?: boolean } = {}) {
-  const id = `f-${label.replace(/\W+/g, "-")}`;
-  const input = opts.multiline
-    ? h("textarea", { id, rows: 2, placeholder: opts.placeholder ?? "" })
-    : h("input", { id, type: opts.type ?? "text", placeholder: opts.placeholder ?? "" });
+function shortcuts(): HTMLElement {
+  const rows: [string[], string][] = [
+    [["↑", "↓"], "Select the previous or next step"],
+    [["⌥↑", "⌥↓"], "Move the selected step"],
+    [["⌫"], "Delete the selected step"],
+    [["⌘Z", "⇧⌘Z"], "Undo, redo"],
+    [["⌘K"], "Ask Claude"],
+    [["⌘S"], "Save"],
+  ];
+  return h(
+    "div",
+    { class: "fields", style: "grid-template-columns: 96px 1fr" },
+    ...rows.flatMap(([keys, what]) => [h("span", {}, ...keys.map((k) => h("kbd", { style: "margin-right:4px" }, k))), h("span", "help", what)]),
+  );
+}
+
+let fieldSeq = 0;
+
+/** A labelled input bound to one field. */
+function textField(label: string, value: string | number | undefined, onInput: (v: string) => void, opts: { placeholder?: string; type?: string; mono?: boolean; idSuffix?: string } = {}) {
+  const id = `f-${label.replace(/\W+/g, "-")}${opts.idSuffix ?? ""}`;
+  const input = h("input", { id, type: opts.type ?? "text", placeholder: opts.placeholder ?? "", class: opts.mono ? "mono" : "", spellcheck: false });
   input.value = value === undefined ? "" : String(value);
-  input.oninput = () => onChange(input.value);
+  input.oninput = () => onInput(input.value);
   return [h("label", { htmlFor: id }, label), input];
 }
 
 function selectField(label: string, value: string, options: [string, string][], onChange: (v: string) => void) {
-  const id = `f-${label.replace(/\W+/g, "-")}`;
+  const id = `f-${label.replace(/\W+/g, "-")}-${++fieldSeq}`;
   const sel = h("select", { id }, ...options.map(([v, text]) => h("option", { value: v, selected: v === value }, text)));
   sel.onchange = () => onChange(sel.value);
   return [h("label", { htmlFor: id }, label), sel];
 }
 
 /** Sets or clears an optional field. */
-function withField<S extends Step>(step: S, key: string, value: unknown): S {
-  const next = { ...step } as Record<string, unknown>;
+function withField<S extends object>(obj: S, key: string, value: unknown): S {
+  const next = { ...obj } as Record<string, unknown>;
   if (value === undefined || value === "") delete next[key];
   else next[key] = value;
   return next as S;
 }
 
+function section(title: string, ...children: Child[]): HTMLElement {
+  return h("div", "section", h("h3", {}, title), ...children);
+}
+
 function stepFields(step: Step, item: string | undefined): HTMLElement[] {
+  const id = step.id;
   const tabOptions = Object.keys(current.tabs).map((r) => [r, r] as [string, string]);
-  const set = (key: string, full = false) => (v: unknown) => updateStep(withField(step, key, v), full);
+  /** Binds an input to a field of the current step; typing in it is one undo step. */
+  const set = (key: string, full = false) => (v: unknown) =>
+    patchStep(id, (s) => withField(s, key, v), full ? { full: true } : { typing: `${id}:${key}` });
   const fields = h("div", "fields");
-  const out: HTMLElement[] = [fields];
-  const templates = templatesAt(current, step.id);
-  const varsHint = templates.length
-    ? h("div", "full vars", h("span", "hint", "Insert: "), ...templates.map((t) => h("code", { title: "Copy", onclick: () => navigator.clipboard.writeText(`{{${t}}}`) }, `{{${t}}}`)))
+  const out: HTMLElement[] = [section("Details", fields)];
+  const templates = templatesAt(current, id);
+  const insertable = templates.length
+    ? h("div", "full chips", h("span", "help", "Available:"), ...templates.map((t) =>
+        h("button", { type: "button", title: "Copy", onclick: () => (navigator.clipboard.writeText(`{{${t}}}`), toast(`Copied {{${t}}}`)) }, `{{${t}}}`)))
     : undefined;
+  /** An element section; edits always apply to the current version of the step's field. */
+  const element = (title: string, key: "target" | "until.target", optional = false) => {
+    const get = () => {
+      const s = stepById(id) as (Step & { target?: Target; until?: { target?: Target } }) | undefined;
+      return key === "target" ? s?.target : s?.until?.target;
+    };
+    const put = (t: Target | undefined, opts: { typing?: string; full?: boolean }) =>
+      patchStep(id, (s) => {
+        if (key === "target") return withField(s, "target", t);
+        const until = withField((s as { until?: object }).until ?? {}, "target", t);
+        return withField(s, "until", Object.keys(until).length ? until : undefined);
+      }, opts);
+    out.push(section(title, targetEditor(step, get, put, item, optional, key)));
+  };
 
   if (!["switchTab", "openTab", "closeTab", "forEach"].includes(step.kind)) {
-    fields.append(...selectField("Tab", step.tab ?? "", [["", "Current tab"], ...tabOptions], set("tab")));
+    fields.append(...selectField("Tab", step.tab ?? "", [["", "Current tab"], ...tabOptions], set("tab", true)));
   }
-  const targetSection = (title: string, target: Target | undefined, onChange: (t: Target | undefined) => void, optional = false) =>
-    out.push(h("h3", {}, title), targetEditor(step, target, onChange, item, optional));
 
   switch (step.kind) {
     case "navigate":
-      fields.append(...textField("URL", step.url, set("url"), { placeholder: "https://… or {{item.url}}" }));
-      if (varsHint) fields.append(varsHint);
+      fields.append(...textField("URL", step.url, set("url"), { placeholder: "https://… or {{item.url}}", mono: true }));
+      if (insertable) fields.append(insertable);
       break;
     case "switchTab":
       fields.append(...selectField("Tab", step.role, tabOptions, set("role", true)));
-      fields.append(...textField("Open at", step.url, set("url"), { placeholder: "Its start URL, if it isn't open" }));
+      fields.append(...textField("Open at", step.url, set("url"), { placeholder: "Its start URL", mono: true }));
       break;
     case "openTab":
       fields.append(...selectField("As tab", step.role, tabOptions, set("role", true)));
-      fields.append(...textField("URL", step.url, set("url"), { placeholder: "https://…" }));
-      if (varsHint) fields.append(varsHint);
+      fields.append(...textField("URL", step.url, set("url"), { placeholder: "https://…", mono: true }));
+      if (insertable) fields.append(insertable);
       break;
     case "closeTab":
       fields.append(...selectField("Tab", step.role, tabOptions, set("role", true)));
       break;
     case "click": {
-      fields.append(...selectField("Opens a new tab", step.opensTab ?? "", [["", "No"], ...tabOptions.map(([r]) => [r, `Yes, as ${r}`] as [string, string])], set("opensTab", true)));
-      targetSection("Element", step.target, (t) => t && updateStep({ ...step, target: t }, true));
-      out.push(h("h3", {}, "Then expect"));
-      const until = step.until ?? {};
-      const setUntil = (u: typeof until, full = false) => updateStep(withField(step, "until", u.target || u.textIncludes || u.urlMatches ? u : undefined), full);
-      const expect = h("div", "fields");
-      expect.append(...textField("Text appears", until.textIncludes, (v) => setUntil(withField(until as Step, "textIncludes", v) as typeof until), { placeholder: "e.g. Link copied" }));
-      expect.append(h("p", "hint full", "If it doesn't appear, the click is repeated (pages often ignore clicks while loading)."));
-      out.push(expect);
-      out.push(targetEditor(step, until.target, (t) => setUntil(withField(until as Step, "target", t) as typeof until, true), item, true, "Element appears"));
+      fields.append(...selectField("Opens a tab", step.opensTab ?? "", [["", "No"], ...tabOptions.map(([r]) => [r, `Yes, as ${r}`] as [string, string])], set("opensTab", true)));
+      element("Element", "target");
+      const until = h("div", "fields");
+      until.append(...textField("Text appears", step.until?.textIncludes, (v) =>
+        patchStep(id, (s) => {
+          const u = withField((s as { until?: object }).until ?? {}, "textIncludes", v);
+          return withField(s, "until", Object.keys(u).length ? u : undefined);
+        }, { typing: `${id}:until.text` }), { placeholder: "e.g. Link copied" }));
+      until.append(h("p", "help full", "If nothing expected appears, the click is repeated. Pages often ignore clicks while loading."));
+      out.push(section("Then expect", until));
+      element("Element appears", "until.target", true);
       break;
     }
     case "fill":
-      fields.append(...textField("Value", step.value, set("value"), { placeholder: "Text, or {{link}}" }));
-      if (varsHint) fields.append(varsHint);
-      targetSection("Field", step.target, (t) => t && updateStep({ ...step, target: t }, true));
+      fields.append(...textField("Value", step.value, set("value"), { placeholder: "Text or {{variable}}", mono: true }));
+      if (insertable) fields.append(insertable);
+      element("Field", "target");
       break;
     case "press":
       fields.append(...textField("Key", step.key, set("key"), { placeholder: "Enter, Escape, Tab, a…" }));
-      targetSection("Focus first (optional)", step.target, (t) => updateStep(withField(step, "target", t), true), true);
+      element("Focus first", "target", true);
       break;
     case "waitFor":
-      fields.append(...textField("Text", step.textIncludes, set("textIncludes"), { placeholder: "Text that should appear" }));
-      fields.append(...textField("URL matches", step.urlMatches, set("urlMatches"), { placeholder: "Regular expression" }));
-      fields.append(...textField("Give up after (ms)", step.timeoutMs, (v) => set("timeoutMs")(v ? Number(v) : undefined), { type: "number", placeholder: "10000" }));
-      if (varsHint) fields.append(varsHint);
-      targetSection("Element (optional)", step.target, (t) => updateStep(withField(step, "target", t), true), true);
+      fields.append(...textField("Text", step.textIncludes, set("textIncludes"), { placeholder: "Text that should appear", mono: true }));
+      fields.append(...textField("URL matches", step.urlMatches, set("urlMatches"), { placeholder: "Regular expression", mono: true }));
+      fields.append(...textField("Timeout", step.timeoutMs, (v) => set("timeoutMs")(v ? Number(v) : undefined), { type: "number", placeholder: "10000 ms" }));
+      if (insertable) fields.append(insertable);
+      element("Element", "target", true);
       break;
     case "extract":
-      fields.append(...textField("Save as", step.name, set("name")));
-      fields.append(...textField("Attribute", step.attr, set("attr"), { placeholder: "Text (or e.g. href)" }));
-      targetSection("Element", step.target, (t) => t && updateStep({ ...step, target: t }, true));
+      fields.append(...textField("Save as", step.name, set("name"), { mono: true }));
+      fields.append(...textField("Attribute", step.attr, set("attr"), { placeholder: "Text, or e.g. href", mono: true }));
+      element("Element", "target");
       break;
     case "extractList":
-      fields.append(...textField("Save as", step.name, set("name")));
-      fields.append(...textField("Each item", step.itemSelector, set("itemSelector"), { placeholder: "CSS selector, e.g. #playlist .item" }));
-      out.push(h("h3", {}, "Fields of each item"), listFieldsEditor(step));
+      fields.append(...textField("Save as", step.name, set("name"), { mono: true }));
+      fields.append(...textField("Each item", step.itemSelector, set("itemSelector"), { placeholder: "CSS, e.g. #playlist .item", mono: true }));
+      out.push(section("Fields of each item", listFieldsEditor(step)));
       break;
     case "copyFromClipboard":
-      fields.append(...textField("Save as", step.name, set("name")));
-      fields.append(h("p", "hint full", "Takes the value the previous click copied (for example a “Copy link” button)."));
+      fields.append(...textField("Save as", step.name, set("name"), { mono: true }));
+      fields.append(h("p", "help full", "Takes the value the previous click copied, such as a “Copy link” button."));
       break;
     case "forEach": {
       const lists = listNames(current);
       const options: [string, string][] = lists.map((l) => [l, l]);
-      if (!lists.includes(step.list)) options.unshift([step.list, step.list || "(choose a list)"]);
+      if (!lists.includes(step.list)) options.unshift([step.list, step.list || "Choose a list"]);
       fields.append(...selectField("Repeat over", step.list, options, set("list", true)));
-      fields.append(...textField("Call each", step.as, (v) => updateStep(renameItem(step, v.trim()))));
+      fields.append(...textField("Call each", step.as, (v) => patchStep(id, (s) => renameItem(s as Extract<Step, { kind: "forEach" }>, v.trim()), { typing: `${id}:as` }), { mono: true }));
       break;
     }
     case "assert":
-      fields.append(...textField("Condition", step.condition, set("condition"), { multiline: true, placeholder: "What must be true" }));
-      targetSection("Element that must be there (optional)", step.target, (t) => updateStep(withField(step, "target", t), true), true);
+      fields.append(...textField("Condition", step.condition, set("condition"), { placeholder: "What must be true" }));
+      element("Element that must be there", "target", true);
       break;
   }
   return out;
@@ -556,134 +901,194 @@ function renameItem(loop: Extract<Step, { kind: "forEach" }>, to: string): Step 
 }
 
 function listFieldsEditor(step: Extract<Step, { kind: "extractList" }>): HTMLElement {
-  const grid = h("div", "list-fields", h("span", "hint", "Name"), h("span", "hint", "Selector in the item"), h("span", "hint", "Attribute"), h("span"));
-  const entries = Object.entries(step.fields);
-  const write = (rows: [string, { selector?: string; attr?: string }][], full = false) =>
-    updateStep({ ...step, fields: Object.fromEntries(rows.filter(([n]) => n)) }, full);
-  entries.forEach(([name, f], i) => {
-    const update = (patch: Partial<{ name: string; selector: string; attr: string }>) => {
-      const rows = entries.map(([n, v]) => [n, { ...v }] as [string, { selector?: string; attr?: string }]);
-      if (patch.name !== undefined) rows[i][0] = patch.name;
-      if (patch.selector !== undefined) rows[i][1] = withField(rows[i][1] as Step, "selector", patch.selector) as never;
-      if (patch.attr !== undefined) rows[i][1] = withField(rows[i][1] as Step, "attr", patch.attr) as never;
-      write(rows);
-    };
-    const nameInput = h("input", { value: name, "aria-label": "Field name" });
-    nameInput.onchange = () => update({ name: nameInput.value.trim() });
-    const sel = h("input", { value: f.selector ?? "", placeholder: "(the item)", "aria-label": `${name} selector` });
-    sel.oninput = () => update({ selector: sel.value });
-    const attr = h("input", { value: f.attr ?? "", placeholder: "text", "aria-label": `${name} attribute` });
-    attr.oninput = () => update({ attr: attr.value });
-    const remove = h("button", { class: "ghost small danger", title: "Remove field" }, "✕");
-    remove.onclick = () => write(entries.filter((_, j) => j !== i), true);
-    grid.append(nameInput, sel, attr, remove);
-  });
-  const addField = h("button", { class: "small" }, "Add field");
-  addField.onclick = () => {
-    let n = entries.length + 1;
-    while (`field${n}` in step.fields) n++;
-    write([...entries, [`field${n}`, {}]], true);
+  const id = step.id;
+  const grid = h("div", "list-fields", h("span", "head", "Name"), h("span", "head", "Selector in the item"), h("span", "head", "Attribute"), h("span"));
+  type Row = [string, { selector?: string; attr?: string }];
+  const rows = (): Row[] => {
+    const s = stepById(id);
+    return s?.kind === "extractList" ? Object.entries(s.fields).map(([n, f]) => [n, { ...f }] as Row) : [];
   };
-  return h("div", {}, grid, h("div", "row", addField));
+  const write = (next: Row[], opts: { typing?: string; full?: boolean }) =>
+    patchStep(id, (s) => ({ ...s, fields: Object.fromEntries(next.filter(([n]) => n)) }) as Step, opts);
+  Object.entries(step.fields).forEach(([name, f], i) => {
+    const update = (key: "name" | "selector" | "attr", v: string) => {
+      const next = rows();
+      if (key === "name") next[i][0] = v;
+      else next[i][1] = withField(next[i][1], key, v);
+      write(next, key === "name" ? { full: true } : { typing: `${id}:fields.${i}.${key}` });
+    };
+    const nameInput = h("input", { value: name, class: "mono", "aria-label": "Field name" });
+    nameInput.onchange = () => update("name", nameInput.value.trim());
+    const sel = h("input", { value: f.selector ?? "", placeholder: "The item", class: "mono", "aria-label": `${name} selector` });
+    sel.oninput = () => update("selector", sel.value);
+    const attr = h("input", { value: f.attr ?? "", placeholder: "text", class: "mono", "aria-label": `${name} attribute` });
+    attr.oninput = () => update("attr", attr.value);
+    grid.append(nameInput, sel, attr, iconButton(X, "Remove field", () => write(rows().filter((_, j) => j !== i), { full: true })));
+  });
+  const addField = h("button", { class: "btn small", type: "button" }, icon(Plus), "Add field");
+  addField.onclick = () => {
+    const next = rows();
+    let n = next.length + 1;
+    while (next.some(([k]) => k === `field${n}`)) n++;
+    write([...next, [`field${n}`, {}]], { full: true });
+  };
+  return h("div", {}, grid, h("div", { style: "margin-top:8px" }, addField));
 }
 
-/** An element a step uses: what the recording saw, its locator parts, and a way to choose another. */
-function targetEditor(step: Step, target: Target | undefined, onChange: (t: Target | undefined) => void, item: string | undefined, optional: boolean, title?: string): HTMLElement {
+/** An element a step uses: what the recording saw, its description and locator, and a way to choose another. */
+function targetEditor(
+  step: Step,
+  get: () => Target | undefined,
+  put: (t: Target | undefined, opts: { typing?: string; full?: boolean }) => void,
+  item: string | undefined,
+  optional: boolean,
+  key: string,
+): HTMLElement {
+  const target = get();
+  const choose = h("button", { class: "btn small", type: "button" }, icon(Crosshair), target ? "Choose another" : "Choose element");
+  choose.onclick = () => openPicker(step, get(), (t) => put(t, { full: true }));
+  if (!target) return h("div", "target", h("div", "target-body", h("div", "target-row", h("span", "help", "None"), h("div", "spacer"), choose)));
+
   const box = h("div", "target");
-  if (title) box.append(h("strong", {}, title));
-  const choose = h("button", { class: "small" }, target ? "Choose another element…" : "Choose an element…");
-  choose.onclick = () => openPicker(step, target, onChange);
-  if (!target) {
-    box.append(h("div", "row", h("span", "hint", "None"), choose));
-    return box;
-  }
   const view = viewOf(target.source?.step);
-  const bbox = bboxOf(target);
-  if (view?.screenshotId) box.append(screenshot(view, bbox ? [{ bbox }] : []));
-  else box.append(h("p", "hint", target.source ? "No screenshot for this step." : "Not an element from the recording."));
-  const fields = h("div", "fields");
-  const patch = (fp: Partial<Fingerprint>) => {
-    const fingerprint = { ...target.fingerprint };
-    for (const [k, v] of Object.entries(fp) as [keyof Fingerprint, string][]) {
-      if (v) (fingerprint as Record<string, unknown>)[k] = v;
-      else delete fingerprint[k];
-    }
-    onChange({ ...target, fingerprint });
+  if (view?.screenshotId) box.append(crop(view, bboxOf(target), "zoom", 420));
+
+  const typingKey = `${step.id}:${key}`;
+  // The first element section's fields get plain ids; a second one (e.g. "Element appears") gets its own.
+  const idSuffix = key === "target" ? "" : `-${key.replace(/\W+/g, "-")}`;
+  const patchFp = (part: keyof Fingerprint, v: string) => {
+    const t = get();
+    if (!t) return;
+    put({ ...t, fingerprint: withField(t.fingerprint, part, v.trim() || undefined) }, { typing: `${typingKey}.${part}` });
   };
-  fields.append(...textField("Description", target.description, (v) => onChange({ ...target, description: v })));
-  fields.append(...textField("Role", target.fingerprint.role, (v) => patch({ role: v }), { placeholder: "button, link, textbox…" }));
-  fields.append(...textField("Name", target.fingerprint.name, (v) => patch({ name: v }), { placeholder: "Its label or text" }));
-  fields.append(...textField("CSS", target.fingerprint.css, (v) => patch({ css: v }), { placeholder: "Optional selector" }));
+  const description = h("input", { id: `f-Description${idSuffix}`, "aria-label": "Description", value: target.description, placeholder: "What it is, in plain words" });
+  description.oninput = () => {
+    const t = get();
+    if (t) put({ ...t, description: description.value }, { typing: `${typingKey}.description` });
+  };
+  const bodyEl = h("div", "target-body", h("div", "target-row", description, choose));
+  if (!view?.screenshotId) bodyEl.append(h("p", "help", target.source ? "No screenshot of this moment in the recording." : "Not an element from the recording."));
+
   if (item) {
-    const id = `within-${step.id}-${title ?? "t"}`.replace(/\W+/g, "-");
-    const within = h("input", { type: "checkbox", id, checked: target.within === item });
+    const within = h("input", { type: "checkbox", checked: target.within === item });
     within.onchange = () => {
-      const { within: _, ...rest } = target;
-      onChange(within.checked ? { ...rest, within: item } : rest);
+      const t = get();
+      if (!t) return;
+      const { within: _, ...rest } = t;
+      put(within.checked ? { ...rest, within: item } : rest, { full: true });
     };
-    fields.append(h("label", { htmlFor: id }, "Per item"), h("div", "row", within, h("span", "hint", `Look only inside the current ${item}`)));
+    bodyEl.append(h("label", "switch", within, `Only inside the current ${item}`));
   }
-  box.append(fields);
-  const remove = optional ? h("button", { class: "small ghost danger", onclick: () => onChange(undefined) }, "Remove") : undefined;
-  box.append(h("div", "row", choose, remove));
+
+  const locator = h("div", "fields");
+  locator.append(...textField("Role", target.fingerprint.role, (v) => patchFp("role", v), { placeholder: "button, link, textbox…", idSuffix }));
+  locator.append(...textField("Name", target.fingerprint.name, (v) => patchFp("name", v), { placeholder: "Its label or text", idSuffix }));
+  locator.append(...textField("CSS", target.fingerprint.css, (v) => patchFp("css", v), { placeholder: "Optional selector", mono: true, idSuffix }));
+  const details = h("details", "locator", h("summary", {}, "Locator", icon(ChevronDown)), locator);
+  const row = h("div", "target-row", details);
+  if (optional) row.append(h("div", "spacer"), h("button", { class: "btn ghost small danger", type: "button", onclick: () => put(undefined, { full: true }) }, "Remove"));
+  bodyEl.append(row);
+  box.append(bodyEl);
   return box;
 }
 
-function stepActions(step: Step, inLoop: boolean): HTMLElement {
-  const move = (dir: -1 | 1) => () => setWorkflow(moveStep(current, step.id, dir), true);
-  const remove = () => {
-    selected = undefined;
-    setWorkflow(deleteStep(current, step.id), true);
-  };
+function stepActions(step: Step): HTMLElement {
+  const insert = h("button", { class: "btn small", type: "button" }, icon(Plus), "Insert after");
+  const inLoop = step.kind === "forEach" || Boolean(locate(current.steps, step.id)?.loop);
+  insert.onclick = () => openMenu(insert, inLoop, (kind) => add(kind, { after: step.id }));
   return h(
     "div",
-    "step-actions",
-    h("button", { class: "small", onclick: move(-1) }, "Move up"),
-    h("button", { class: "small", onclick: move(1) }, "Move down"),
-    addMenu("Insert after", (kind) => add(kind, { after: step.id }), inLoop || step.kind === "forEach"),
-    h("button", { class: "small danger", onclick: remove }, "Delete step"),
+    "panel-actions",
+    insert,
+    h("button", { class: "btn small", type: "button", onclick: () => move(step.id, -1) }, icon(ArrowUp), "Up"),
+    h("button", { class: "btn small", type: "button", onclick: () => move(step.id, 1) }, icon(ArrowDown), "Down"),
+    h("div", "spacer"),
+    h("button", { class: "btn small danger", type: "button", onclick: () => remove(step.id) }, icon(Trash2), "Delete step"),
   );
 }
 
-// ---- Recording panel ----
+// ---- Recording tab ----
 
 function recordingPanel(): HTMLElement[] {
   if (!recording) {
-    return [h("h2", {}, "Recording"), h("p", "empty", "This workflow wasn't compiled from a recording, so there are no screenshots or page elements to pick from.")];
+    return [h("p", "rec-intro", "This workflow wasn't made from a recording, so there are no screenshots or page elements to choose from.")];
   }
   const excluded = new Map((shown().notes?.excludedSteps ?? []).map((x) => [x.step, x.reason]));
   const usedBy = new Map<string, string[]>();
   for (const s of allSteps(shown().steps)) {
     const ids = new Set([...(s.basedOn ?? []), ...("target" in s && s.target?.source ? [s.target.source.step] : [])]);
-    for (const id of ids) usedBy.set(id, [...(usedBy.get(id) ?? []), s.id]);
+    for (const rid of ids) usedBy.set(rid, [...(usedBy.get(rid) ?? []), s.id]);
   }
+  const order = allSteps(shown().steps).map((s) => s.id);
   const rec = recording;
   const items = [...recSteps.values()].map((step) => {
     const view = viewOf(step.id);
-    const toggle = h("button", { class: "ghost small" }, step.noise ? "Keep" : "Mark as noise");
-    toggle.onclick = async () => {
+    const toggle = iconButton(step.noise ? Eye : EyeOff, step.noise ? "Keep this step" : "Mark as noise", async () => {
       await api(`/recordings/${rec.id}/overrides/${step.events[0]}`, { method: "PUT", body: { noise: !step.noise } });
       await loadRecording(rec.id);
-      renderInspector();
-    };
+      renderPanel();
+    });
     const users = usedBy.get(step.id) ?? [];
     return h(
       "li",
-      step.noise ? "noise" : "",
-      h("span", "id", step.id),
-      h("div", {}, describeStep(step)),
+      step.noise ? "is-noise" : "",
+      view?.screenshotId ? crop(view, "target" in step ? step.target?.bbox : undefined, "thumb", 360) : h("div", "thumb none", icon(REC_ICONS[step.kind])),
+      h(
+        "div",
+        {},
+        h("div", "what", describeStep(step)),
+        step.noise && h("div", "sub noise", `Likely noise: ${step.noise.reason}`),
+        excluded.has(step.id) && h("div", "sub", `Left out by Claude: ${excluded.get(step.id)}`),
+        users.length > 0 && h("div", "used", ...users.map((sid) => h("button", { type: "button", onclick: () => select(sid) }, `Step ${order.indexOf(sid) + 1}`))),
+      ),
       toggle,
-      step.noise && h("span", "why", `Likely noise: ${step.noise.reason}`),
-      excluded.has(step.id) && h("span", "why", `Left out by Claude: ${excluded.get(step.id)}`),
-      users.length > 0 && h("span", "used", "Used by ", ...users.map((id) => h("a", { onclick: () => select(id) }, stepLabel(id)))),
-      view?.screenshotId && h("div", { class: "why" }, h("img", { class: "rec-shot", src: `${API}/screenshots/${view.screenshotId}`, alt: "", loading: "lazy" })),
     );
   });
   return [
-    h("h2", {}, "Recording"),
-    h("p", "hint", `${rec.name}. Select a step on the left to edit it. Noise marks change what Claude sees when the recording is compiled again from the side panel.`),
-    h("h3", {}, "Recorded steps"),
+    h("p", "rec-intro", `What you did in “${rec.name}”. Steps marked as noise are left out the next time the recording is compiled from the side panel.`),
     h("ul", "rec", ...items),
+  ];
+}
+
+// ---- Settings tab ----
+
+function settingsPanel(): HTMLElement[] {
+  const wf = shown();
+  const locked = Boolean(proposal);
+  const rows = h("div", "tab-rows", h("span", "head", "Tab"), h("span", "head", "Starts at"), h("span"));
+  for (const [role, tab] of Object.entries(wf.tabs)) {
+    const roleInput = h("input", { value: role, disabled: locked, "aria-label": "Tab name" });
+    roleInput.onchange = () => {
+      const to = roleInput.value.trim();
+      if (!to || to === role || to in current.tabs) return void (roleInput.value = role);
+      change(renameTab(current, role, to), { full: true });
+    };
+    const url = h("input", { value: tab.startUrl ?? "", class: "mono", placeholder: "Opened by a step", disabled: locked, "aria-label": `${role} start URL` });
+    url.oninput = () => {
+      const v = url.value.trim();
+      change({ ...current, tabs: { ...current.tabs, [role]: v ? { startUrl: v } : {} } }, { typing: `tab:${role}` });
+    };
+    const removeTab = iconButton(X, `Remove the ${role} tab`, () => {
+      const { [role]: _, ...rest } = current.tabs;
+      change({ ...current, tabs: rest }, { full: true });
+    });
+    removeTab.disabled = locked || Object.keys(wf.tabs).length < 2;
+    rows.append(roleInput, url, removeTab);
+  }
+  const addTab = h("button", { class: "btn small", type: "button", disabled: locked }, icon(Plus), "Add tab");
+  addTab.onclick = () => {
+    let n = Object.keys(current.tabs).length + 1;
+    while (`tab${n}` in current.tabs) n++;
+    change({ ...current, tabs: { ...current.tabs, [`tab${n}`]: {} } }, { full: true });
+  };
+  const popups = h("input", { type: "checkbox", checked: Boolean(wf.closePopups), disabled: locked });
+  popups.onchange = () => {
+    const { closePopups: _, ...rest } = current;
+    change(popups.checked ? { ...rest, closePopups: true } : rest, { full: true });
+  };
+  return [
+    section("Tabs", h("p", { class: "help", style: "margin-bottom:10px" }, "Each tab the workflow uses, and where it opens if it isn't open yet."), rows, h("div", { style: "margin-top:8px" }, addTab)),
+    section("While running", h("label", "switch", popups, "Close tabs that pages open on other sites, like ads")),
   ];
 }
 
@@ -694,31 +1099,37 @@ function openPicker(step: Step, previous: Target | undefined, onPick: (t: Target
   const states = [...recSteps.values()].filter((s) => viewOf(s.id)?.inventory?.length);
   const dialog = $("picker");
   if (!states.length) {
-    alert("The recording has no page elements to pick from. Fill in the role and name (or CSS) by hand.");
+    toast("The recording has no page elements to choose from. Fill in the locator by hand.");
     return;
   }
+  const opener = document.activeElement as HTMLElement | null;
   const preferred = previous?.source?.step ?? sourceOf(step);
   let stateId = states.find((s) => s.id === preferred)?.id ?? states[0].id;
-  const loc = locate(current.steps, step.id);
-  const item = loc?.loop?.as;
+  const item = locate(current.steps, step.id)?.loop?.as;
   const close = () => {
     dialog.hidden = true;
     dialog.replaceChildren();
-    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onKey, true);
+    opener?.focus();
   };
-  const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-  document.addEventListener("keydown", onKey);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
 
   const draw = () => {
     const view = viewOf(stateId)!;
     const inventory = view.inventory ?? [];
     const pick = (i: number) => {
-      // Per-item when the step's current element is, or when picking a new one inside a loop.
-      const within = previous ? (previous.within ? item : undefined) : item;
+      // Per item when the step's current element is, or when choosing a first one inside a loop.
+      const within = previous && previous.description !== "element" ? (previous.within ? item : undefined) : item;
       onPick(pickedTarget(inventory[i], { step: stateId, inventoryIndex: i }, previous, within));
       close();
     };
-    const stateSelect = h("select", { "aria-label": "Page state" }, ...states.map((s) => h("option", { value: s.id, selected: s.id === stateId }, `${s.id} · ${describeStep(s)}`)));
+    const stateSelect = h("select", { "aria-label": "Page state" }, ...states.map((s) => h("option", { value: s.id, selected: s.id === stateId }, `${s.id}: ${describeStep(s)}`)));
     stateSelect.onchange = () => ((stateId = stateSelect.value), draw());
     const search = h("input", { type: "search", placeholder: "Filter elements", "aria-label": "Filter elements" });
     const list = h("ul");
@@ -727,12 +1138,13 @@ function openPicker(step: Step, previous: Target | undefined, onPick: (t: Target
     const hot = (i: number, on: boolean) => {
       rows[i]?.classList.toggle("hot", on);
       boxes.get(i)?.classList.toggle("hot", on);
+      if (on) rows[i]?.scrollIntoView({ block: "nearest" });
     };
-    inventory.forEach((el, i) => {
-      const fp = el.fingerprint;
+    inventory.forEach((entry, i) => {
+      const fp = entry.fingerprint;
       const isCurrent = previous?.source?.step === stateId && previous.source.inventoryIndex === i;
       const row = h("li", { class: isCurrent ? "current" : "", onclick: () => pick(i), onmouseenter: () => hot(i, true), onmouseleave: () => hot(i, false) },
-        h("span", "role", fp.role ?? el.tag), h("span", {}, fp.name ?? fp.href ?? fp.css ?? ""));
+        h("span", "role", fp.role ?? entry.tag), h("span", "label", fp.name ?? fp.href ?? fp.css ?? ""));
       rows[i] = row;
       list.append(row);
     });
@@ -740,24 +1152,30 @@ function openPicker(step: Step, previous: Target | undefined, onPick: (t: Target
       const q = search.value.trim().toLowerCase();
       rows.forEach((row) => (row.hidden = Boolean(q) && !row.textContent!.toLowerCase().includes(q)));
     };
+    search.onkeydown = (e) => {
+      if (e.key !== "Enter") return;
+      const first = rows.findIndex((r) => !r.hidden);
+      if (first !== -1) pick(first);
+    };
     const pane = h("div", "view");
     if (view.screenshotId) {
-      const shot = screenshot(view, inventory.flatMap((el, i) => (el.fingerprint.bbox ? [{
-        bbox: el.fingerprint.bbox, cls: "faint", title: `${el.fingerprint.role ?? el.tag} ${el.fingerprint.name ?? ""}`,
-        onClick: () => pick(i), onHover: (on: boolean) => hot(i, on), placed: (box: HTMLElement) => boxes.set(i, box),
-      }] : [])));
-      pane.append(shot);
+      pane.append(screenshot(view, inventory.flatMap((entry, i) => (entry.fingerprint.bbox ? [{
+        bbox: entry.fingerprint.bbox, title: `${entry.fingerprint.role ?? entry.tag} ${entry.fingerprint.name ?? ""}`,
+        onClick: () => pick(i), onHover: (on: boolean) => hot(i, on), placed: (b: HTMLElement) => boxes.set(i, b),
+      }] : []))));
     } else {
-      pane.append(h("p", "empty", "No screenshot of this page state; pick from the list."));
+      pane.append(h("p", "empty", "No screenshot of this moment. Choose from the list."));
     }
     dialog.replaceChildren(
-      h("div", { class: "dialog", role: "dialog", "aria-label": "Choose an element" },
-        h("header", {}, h("strong", {}, "Choose an element"), stateSelect, h("span", "hint", `${inventory.length} elements`), h("div", "spacer"),
-          h("button", { class: "ghost", onclick: close }, "Cancel")),
-        h("div", "panes", pane, h("div", "elements", search, list)),
+      h("div", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": "Choose an element" },
+        h("header", {}, h("strong", {}, "Choose an element"), stateSelect, h("span", "count", `${inventory.length} elements`), h("div", "spacer"),
+          iconButton(X, "Close", close, "icon-btn")),
+        h("div", "panes", pane, h("div", "side", h("label", "search", icon(Search), search), list)),
       ),
     );
-    dialog.onclick = (e) => e.target === dialog && close();
+    dialog.onclick = (e) => {
+      if (e.target === dialog) close();
+    };
     search.focus();
   };
   dialog.hidden = false;
@@ -768,13 +1186,15 @@ function openPicker(step: Step, previous: Target | undefined, onPick: (t: Target
 
 async function save(): Promise<boolean> {
   try {
-    const res = await api<{ workflow: Workflow }>(`/workflows/${workflowId}`, { method: "PUT", body: current });
+    const res = await api<{ workflow: Workflow; problems: WorkflowProblem[] }>(`/workflows/${workflowId}`, { method: "PUT", body: current });
     saved = res.workflow;
     current = structuredClone(res.workflow);
+    typing = undefined;
     render();
+    toast(res.problems.length ? `Saved with ${res.problems.length} problem${res.problems.length === 1 ? "" : "s"}` : "Saved");
     return true;
   } catch (err) {
-    alert(`Could not save: ${(err as Error).message}`);
+    toast(`Couldn't save: ${(err as Error).message}`, { bad: true });
     return false;
   }
 }
@@ -783,30 +1203,35 @@ async function run(options: object) {
   if (dirty() && !(await save())) return;
   try {
     await api(`/workflows/${workflowId}/runs`, { method: "POST", body: options });
-    $("ask-status").textContent = "Run started; follow it in the side panel.";
+    toast("Run started. Follow it in the side panel.");
   } catch (err) {
-    alert(`Could not start: ${(err as Error).message}`);
+    toast(`Couldn't start the run: ${(err as Error).message}`, { bad: true });
   }
 }
 
 async function ask() {
-  const request = $<HTMLTextAreaElement>("request").value.trim();
-  if (!request) return $("request").focus();
-  // Claude starts from the stored version, so hand edits are saved first.
+  const textarea = $<HTMLTextAreaElement>("request");
+  const request = textarea.value.trim();
+  if (!request) return textarea.focus();
+  // Claude starts from the stored version, so edits are saved first.
   if (dirty() && !(await save())) return;
   const status = $("ask-status");
   const button = $<HTMLButtonElement>("ask-go");
   button.disabled = true;
-  status.textContent = "Claude is working on it; this can take a minute…";
+  textarea.disabled = true;
+  status.className = "ask-status working";
+  status.textContent = "Claude is updating the workflow. This can take a minute.";
   try {
     const res = await api<{ proposalId: string; workflow: Workflow }>(`/workflows/${workflowId}/propose`, { method: "POST", body: { request } });
     proposal = { id: res.proposalId, workflow: res.workflow, diff: diffSteps(current.steps, res.workflow.steps) };
     status.textContent = "";
     render();
   } catch (err) {
-    status.textContent = `Could not change it: ${(err as Error).message}`;
+    status.className = "ask-status";
+    status.textContent = `Claude couldn't change it: ${(err as Error).message}`;
   } finally {
     button.disabled = false;
+    textarea.disabled = false;
   }
 }
 
@@ -814,13 +1239,18 @@ async function acceptProposal() {
   if (!proposal) return;
   try {
     const wf = await api<Workflow>(`/workflows/${workflowId}/proposals/${proposal.id}/accept`, { method: "POST" });
+    past.push(current);
+    future = [];
     saved = wf;
     current = structuredClone(wf);
     proposal = undefined;
     $<HTMLTextAreaElement>("request").value = "";
+    autosize();
+    if (selected && !locate(current.steps, selected)) selected = undefined;
     render();
+    toast("Changes accepted and saved");
   } catch (err) {
-    alert(`Could not accept: ${(err as Error).message}`);
+    toast(`Couldn't accept: ${(err as Error).message}`, { bad: true });
   }
 }
 
@@ -828,6 +1258,7 @@ async function discardProposal() {
   if (!proposal) return;
   await api(`/workflows/${workflowId}/proposals/${proposal.id}`, { method: "DELETE" }).catch(() => {});
   proposal = undefined;
+  if (selected && !locate(current.steps, selected)) selected = undefined;
   render();
 }
 
@@ -837,38 +1268,113 @@ async function loadRecording(id: string) {
 }
 
 async function load() {
+  applyTheme(storedTheme());
   if (!workflowId) return void (document.body.textContent = "No workflow given.");
   try {
     saved = await api<Workflow>(`/workflows/${workflowId}`);
   } catch (err) {
-    document.body.textContent = `Could not load the workflow: ${(err as Error).message}. Is the server running (pnpm dev:server)?`;
+    document.body.textContent = `Couldn't load the workflow: ${(err as Error).message}. Is the server running? Start it with pnpm dev:server.`;
     return;
   }
   current = structuredClone(saved);
   if (saved.recordingId) await loadRecording(saved.recordingId).catch(() => (recording = undefined));
+  panelTab = recording ? "recording" : "settings";
   document.title = `${saved.name} · Workflow editor`;
   render();
 }
 
-$<HTMLInputElement>("name").oninput = (e) => setWorkflow({ ...current, name: (e.target as HTMLInputElement).value });
+// ---- Wiring ----
+
+function autosize() {
+  const t = $<HTMLTextAreaElement>("request");
+  t.style.height = "auto";
+  t.style.height = `${t.scrollHeight}px`;
+}
+
+$("undo").append(icon(Undo2));
+$("redo").append(icon(Redo2));
+$("composer").querySelector(".composer-icon")!.append(icon(Sparkles));
+$("proposal").querySelector(".proposal-icon")!.append(icon(Sparkles));
+
+$<HTMLInputElement>("name").oninput = (e) => change({ ...current, name: (e.target as HTMLInputElement).value }, { typing: "name" });
 $("save").onclick = () => save();
-$("revert").onclick = () => {
-  current = structuredClone(saved);
-  if (selected && !locate(current.steps, selected)) selected = undefined;
-  render();
+$("undo").onclick = undo;
+$("redo").onclick = redo;
+$("theme").onclick = () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch {
+    // Not remembered; the theme still applies for this visit.
+  }
+};
+$("problems-pill").onclick = () => {
+  const first = checkWorkflow(current).find((p) => p.stepId);
+  if (first?.stepId) return select(first.stepId);
+  panelTab = "settings";
+  renderPanel();
 };
 $("dry").onclick = () => run({ limit: 1 });
 $("run").onclick = () => run({});
-$("ask-go").onclick = ask;
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  ask();
+};
+$<HTMLTextAreaElement>("request").oninput = autosize;
 $<HTMLTextAreaElement>("request").onkeydown = (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask();
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    ask();
+  }
 };
 $("proposal-accept").onclick = acceptProposal;
 $("proposal-discard").onclick = discardProposal;
+for (const b of document.querySelectorAll<HTMLButtonElement>(".tabs button")) {
+  b.onclick = () => {
+    panelTab = b.dataset.tab as PanelTab;
+    renderPanel();
+  };
+}
+
+const isTyping = (t: EventTarget | null) =>
+  t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "s" && (e.metaKey || e.ctrlKey)) {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "s") {
     e.preventDefault();
     if (dirty() && !proposal) save();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    if (!proposal) $("request").focus();
+    return;
+  }
+  if (!$("picker").hidden || !$("menu").hidden || isTyping(e.target)) return;
+  if (mod && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    if (e.shiftKey) redo();
+    else undo();
+    return;
+  }
+  const order = allSteps(shown().steps).map((s) => s.id);
+  const i = selected ? order.indexOf(selected) : -1;
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && e.altKey && selected && !proposal) {
+    e.preventDefault();
+    move(selected, e.key === "ArrowUp" ? -1 : 1);
+  } else if (e.key === "ArrowDown" || e.key === "j") {
+    e.preventDefault();
+    select(order[Math.min(i + 1, order.length - 1)]);
+  } else if (e.key === "ArrowUp" || e.key === "k") {
+    e.preventDefault();
+    select(order[Math.max(i - 1, 0)]);
+  } else if ((e.key === "Backspace" || e.key === "Delete") && selected && !proposal) {
+    e.preventDefault();
+    remove(selected);
+  } else if (e.key === "Escape" && selected) {
+    select(undefined);
   }
 });
 addEventListener("beforeunload", (e) => {

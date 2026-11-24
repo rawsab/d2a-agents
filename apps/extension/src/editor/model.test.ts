@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Step, Workflow } from "@d2a/shared";
-import { blankStep, deleteStep, diffSteps, insertStep, moveStep, newId, pickedTarget, renameTab, templatesAt } from "./model.js";
+import { blankStep, deleteStep, diffSteps, insertStep, moveStep, moveStepTo, newId, pickedTarget, renameTab, templatesAt } from "./model.js";
 
 const s = (id: string): Step => ({ id, kind: "copyFromClipboard", name: id });
 const wf = (steps: Step[]): Workflow => ({ id: "wf", name: "t", tabs: { main: {} }, steps });
@@ -102,5 +102,18 @@ describe("tabs and templates", () => {
   it("lists what a step can refer to", () => {
     expect(templatesAt(w, "d")).toEqual(["videos", "link", "video.title", "video.url"]);
     expect(templatesAt(w, "a")).toEqual([]);
+  });
+});
+
+describe("moveStepTo", () => {
+  const start = wf([s("a"), loop("L", [s("b"), s("c")]), s("d")]);
+  it("drops a step before or after another, into and out of loops", () => {
+    expect(shape(moveStepTo(start, "d", "b", "after").steps)).toEqual(["a", ["L", ["b", "d", "c"]]]);
+    expect(shape(moveStepTo(start, "c", "a", "before").steps)).toEqual(["c", "a", ["L", ["b"]], "d"]);
+  });
+  it("keeps loops out of loops", () => {
+    const two = wf([loop("L", [s("b")]), loop("M", [s("c")])]);
+    expect(shape(moveStepTo(two, "M", "b", "before").steps)).toEqual([["M", ["c"]], ["L", ["b"]]]);
+    expect(shape(moveStepTo(start, "L", "b", "after").steps)).toEqual(shape(start.steps));
   });
 });

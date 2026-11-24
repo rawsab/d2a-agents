@@ -25,20 +25,20 @@ test("asking Claude for a change in the editor shows a diff; discard keeps the w
     await page.locator(".card").first().waitFor();
 
     // A hand edit: describe the Download click differently. Asking Claude saves it first.
-    await page.locator(".card", { hasText: /click .*Download/ }).click();
+    await page.locator(".card", { hasText: /Click .*Download/i }).click();
     await page.locator("#f-Description").fill("the big Download button");
     const ask = async () => {
       await page.locator("#request").fill("At the start of each video, wait until the page shows the text 'Fixture Mix'.");
-      await page.getByRole("button", { name: "Ask Claude" }).click();
+      await page.getByRole("button", { name: "Ask", exact: true }).click();
       await expect(page.locator("#proposal")).toBeVisible({ timeout: 240_000 });
-      await expect(page.locator(".card.added", { hasText: "wait for" })).toHaveCount(1);
+      await expect(page.locator(".node.added", { hasText: "Wait for" })).toHaveCount(1);
     };
 
     await ask();
     const beforeDiscard = await stored();
     await page.getByRole("button", { name: "Discard" }).click();
     await expect(page.locator("#proposal")).toBeHidden();
-    await expect(page.locator(".card.added")).toHaveCount(0);
+    await expect(page.locator(".node.added")).toHaveCount(0);
     expect(await stored()).toEqual(beforeDiscard);
 
     await ask();

@@ -229,3 +229,28 @@ export function templatesAt(workflow: Workflow, id: string): string[] {
   walk(workflow.steps);
   return out;
 }
+
+/**
+ * Moves a step next to another one (drag and drop). A loop can't be dropped into a loop; it then
+ * lands beside the loop it was dropped into.
+ */
+export function moveStepTo(workflow: Workflow, id: string, targetId: string, position: "before" | "after"): Workflow {
+  if (id === targetId) return workflow;
+  return edit(workflow, (wf) => {
+    const from = locate(wf.steps, id);
+    if (!from) return;
+    const step = from.container[from.index];
+    if (step.kind === "forEach" && locate(step.body, targetId)) return; // into itself
+    let to = locate(wf.steps, targetId);
+    if (!to) return;
+    if (step.kind === "forEach" && to.loop) {
+      const loopId = to.loop.id;
+      from.container.splice(from.index, 1);
+      to = locate(wf.steps, loopId)!;
+    } else {
+      from.container.splice(from.index, 1);
+      to = locate(wf.steps, targetId)!;
+    }
+    to.container.splice(to.index + (position === "after" ? 1 : 0), 0, step);
+  });
+}

@@ -6,7 +6,7 @@ import { recordFixtureDemo } from "./demo.js";
 import { API, launch, runWorkflow } from "./harness.js";
 
 test("the editor edits a workflow: element picker, insert, problems, reorder, save, and it still runs", async () => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const fixture = await startFixtureServer();
   const env = await launch();
   try {
@@ -33,6 +33,7 @@ test("the editor edits a workflow: element picker, insert, problems, reorder, sa
     const stored = async () => (await (await fetch(`${API}/workflows/${wf.id}`)).json()) as Workflow;
 
     const page = await env.context.newPage();
+    page.setDefaultTimeout(10_000);
     await page.goto(`chrome-extension://${env.extensionId}/src/editor/index.html?id=${wf.id}`);
     await expect(page.locator(".card")).toHaveCount(11);
     await expect(page.locator(".rec li")).toHaveCount(recorded.length);
@@ -40,37 +41,45 @@ test("the editor edits a workflow: element picker, insert, problems, reorder, sa
     const shareCard = page.locator(".card", { hasText: "click this video's Share button" });
     await expect(shareCard.locator(".thumb .box")).toBeVisible();
     await shareCard.click();
-    await expect(page.locator(".inspector .shot .box")).toHaveCount(1);
+    await expect(page.locator(".panel .zoom .box")).toHaveCount(1);
 
     // Pick a different element on another recorded page state, then put the Download button back.
     const downloadCard = page.locator(".card", { hasText: "click Download button" });
     await downloadCard.click();
-    await page.getByRole("button", { name: "Choose another element…" }).click();
+    await page.getByRole("button", { name: "Choose another" }).click();
     const picker = page.getByRole("dialog", { name: "Choose an element" });
     await picker.getByLabel("Page state").selectOption(copyStep.id);
-    await picker.locator(".elements li", { hasText: "Copy" }).first().click();
+    await picker.locator("li", { hasText: "Copy" }).first().click();
     await expect(picker).toBeHidden();
-    await expect(page.locator(".card.selected")).toContainText("click Download button"); // the description is kept
+    await expect(page.locator(".node.selected > .card")).toContainText("Click Download button"); // the description is kept
     await expect(page.locator("#f-Name")).toHaveValue("Copy");
-    await page.getByRole("button", { name: "Choose another element…" }).click();
+    await page.getByRole("button", { name: "Choose another" }).click();
     await picker.getByLabel("Page state").selectOption(downloadClick.id);
-    await picker.locator(".elements li", { hasText: "Download" }).click();
+    await picker.locator("li", { hasText: "Download" }).click();
     await expect(page.locator("#f-Name")).toHaveValue("Download");
 
     // Insert a step after it, and see a problem flagged until it's fixed.
-    await page.locator(".step-actions select").selectOption("waitFor");
+    await page.getByRole("button", { name: "Insert after" }).click();
+    await page.getByRole("option", { name: "Wait for" }).click();
     await expect(page.locator(".card")).toHaveCount(12);
     await page.locator("#f-Text").fill("Queued {{lnk}}");
-    await expect(page.locator(".problems li")).toContainText("{{lnk}} refers to a variable that isn't set");
+    await expect(page.locator(".node.selected .problem")).toContainText("{{lnk}} refers to a variable that isn't set");
+    await expect(page.locator("#problems-pill")).toHaveText("1 problem");
     await page.locator("#f-Text").fill("Queued {{link}}");
-    await expect(page.locator(".problems li")).toHaveCount(0);
+    await expect(page.locator(".problem")).toHaveCount(0);
+    await expect(page.locator("#problems-pill")).toBeHidden();
 
     // Reorder: move the new step up past Download and back.
-    const newCard = page.locator(".card.selected");
-    await newCard.getByRole("button", { name: "Move up" }).click();
-    await expect(page.locator(".loop .card").nth(7)).toContainText("wait for");
-    await page.locator(".card.selected").getByRole("button", { name: "Move down" }).click();
-    await expect(page.locator(".loop .card").nth(8)).toContainText("wait for");
+    await page.locator(".node.selected > .card").getByRole("button", { name: "Move up" }).click();
+    await expect(page.locator(".loop .card").nth(7)).toContainText("Wait for");
+    await page.keyboard.press("Alt+ArrowDown"); // the same with the keyboard
+    await expect(page.locator(".loop .card").nth(8)).toContainText("Wait for");
+
+    // Delete it, undo the delete.
+    await page.keyboard.press("Backspace");
+    await expect(page.locator(".card")).toHaveCount(11);
+    await page.getByRole("button", { name: "Undo" }).last().click(); // the toast's
+    await expect(page.locator(".card")).toHaveCount(12);
 
     await expect(page.locator("#state")).toHaveText("Unsaved changes");
     await page.getByRole("button", { name: "Save", exact: true }).click();

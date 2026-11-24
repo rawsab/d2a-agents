@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@d2a/shared": "workspace:*",
+    "geist": "^1.9.2",
+    "lucide": "^1.78.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

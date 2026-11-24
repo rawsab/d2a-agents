@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,49 +7,62 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <header class="bar">
-      <input id="name" class="name" aria-label="Workflow name" />
+    <header class="top">
+      <input id="name" class="name" aria-label="Workflow name" spellcheck="false" />
       <span id="state" class="state"></span>
+      <button id="problems-pill" class="pill bad" hidden></button>
       <div class="spacer"></div>
-      <button id="revert" class="ghost" hidden>Discard changes</button>
-      <button id="save" class="primary" disabled>Save</button>
-      <span class="sep"></span>
-      <button id="dry">Dry run (1 item)</button>
-      <button id="run">Run all</button>
+      <button id="undo" class="icon-btn" aria-label="Undo" title="Undo (⌘Z)"></button>
+      <button id="redo" class="icon-btn" aria-label="Redo" title="Redo (⇧⌘Z)"></button>
+      <button id="theme" class="icon-btn" aria-label="Switch to light theme"></button>
+      <span class="divider"></span>
+      <button id="save" class="btn" title="Save (⌘S)">Save</button>
+      <button id="dry" class="btn" title="Run on the first item only">Test on 1 item</button>
+      <button id="run" class="btn primary">Run</button>
     </header>
 
-    <section id="ask" class="ask">
-      <textarea id="request" rows="1" placeholder="Ask Claude to change it, e.g. “skip videos longer than an hour” or “click the 720p option before Download”"></textarea>
-      <button id="ask-go">Ask Claude</button>
-      <p id="ask-status" class="hint"></p>
-    </section>
-
-    <section id="proposal" class="proposal" hidden>
-      <div class="row">
-        <strong>Claude's proposal</strong>
-        <span class="hint">Added, changed and removed steps are marked below. Nothing is saved until you accept.</span>
-        <div class="spacer"></div>
-        <button id="proposal-discard" class="ghost">Discard</button>
-        <button id="proposal-accept" class="primary">Accept</button>
-      </div>
-      <p id="proposal-summary"></p>
-      <ul id="proposal-notes" class="notes"></ul>
-    </section>
-
-    <ul id="problems" class="problems"></ul>
-
     <main>
-      <section class="timeline">
-        <details id="settings" class="settings">
-          <summary>Tabs and options</summary>
-          <div id="settings-body"></div>
-        </details>
-        <ol id="steps" class="steps"></ol>
+      <section class="flow">
+        <div class="flow-inner">
+          <form id="composer" class="composer">
+            <span class="composer-icon" aria-hidden="true"></span>
+            <textarea id="request" rows="1" aria-label="Ask Claude to change the workflow"
+              placeholder="Ask Claude to change this workflow…"></textarea>
+            <kbd class="hint-kbd">⌘K</kbd>
+            <button id="ask-go" class="btn ai" type="submit">Ask</button>
+          </form>
+          <p id="ask-status" class="ask-status" role="status"></p>
+
+          <section id="proposal" class="proposal" hidden aria-label="Claude's proposal">
+            <div class="proposal-head">
+              <span class="proposal-icon" aria-hidden="true"></span>
+              <strong>Claude's proposal</strong>
+              <span id="proposal-counts" class="counts"></span>
+              <div class="spacer"></div>
+              <button id="proposal-discard" class="btn ghost">Discard</button>
+              <button id="proposal-accept" class="btn ai-solid">Accept</button>
+            </div>
+            <p id="proposal-summary" class="proposal-summary"></p>
+            <ul id="proposal-notes" class="proposal-notes"></ul>
+          </section>
+
+          <ol id="steps" class="rail" aria-label="Steps"></ol>
+        </div>
       </section>
-      <aside id="inspector" class="inspector"></aside>
+
+      <aside class="panel">
+        <nav class="tabs" role="tablist" aria-label="Panel">
+          <button role="tab" data-tab="step">Step</button>
+          <button role="tab" data-tab="recording">Recording</button>
+          <button role="tab" data-tab="settings">Settings</button>
+        </nav>
+        <div id="panel-body" class="panel-body" role="tabpanel"></div>
+      </aside>
     </main>
 
+    <div id="menu" class="menu" hidden></div>
     <div id="picker" class="picker" hidden></div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

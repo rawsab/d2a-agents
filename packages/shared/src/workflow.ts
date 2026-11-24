@@ -141,8 +141,12 @@ export function describeWorkflowStep(step: Step): string {
       return `fill ${step.target.description} with ${step.value}`;
     case "press":
       return `press ${step.key}`;
-    case "waitFor":
-      return `wait for ${step.target?.description ?? step.urlMatches ?? "condition"}`;
+    case "waitFor": {
+      // A target on the page body only scopes the text; it isn't worth naming.
+      const element = step.target && step.target.fingerprint.css !== "body" ? step.target.description : undefined;
+      if (step.textIncludes) return `wait for "${step.textIncludes}"${element ? ` in ${element}` : ""}`;
+      return `wait for ${element ?? (step.urlMatches ? `URL matching ${step.urlMatches}` : "the page")}`;
+    }
     case "extract":
       return `read ${step.name} from ${step.target.description}`;
     case "extractList":
