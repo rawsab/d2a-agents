@@ -6,25 +6,83 @@ import {
   type Step,
   type Workflow,
   describeEffect,
-  describeWorkflowStep,
   describeStep,
+  describeWorkflowStep,
   mergeEvents,
 } from "@d2a/shared";
+import {
+  AppWindow,
+  ArrowLeft,
+  ArrowLeftRight,
+  Bandage,
+  Check,
+  Circle,
+  CircleCheck,
+  CircleX,
+  Clipboard,
+  Eye,
+  EyeOff,
+  FlaskConical,
+  Globe,
+  Hourglass,
+  Image as ImageIcon,
+  type IconNode,
+  Keyboard,
+  ListTree,
+  LoaderCircle,
+  MousePointerClick,
+  PanelTopClose,
+  Pause,
+  PenLine,
+  Play,
+  RefreshCw,
+  Repeat,
+  ScanText,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  TextCursorInput,
+  Trash2,
+  X,
+} from "lucide";
 import { API_URL as API } from "../config.js";
+import { $, h, icon, iconButton, setUpTheme, toast } from "../ui/dom.js";
+
 type RecordingState = { id: string; name: string } | null;
 type Status = { connected: boolean; recording: RecordingState };
-
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-};
 
 let status: Status = { connected: false, recording: null };
 let liveEvents: RecordedEvent[] = [];
 let openRecordingId: string | undefined;
+
+const RECORDED_ICONS: Record<SemanticStep["kind"], IconNode> = {
+  openTab: AppWindow,
+  switchTab: ArrowLeftRight,
+  navigate: Globe,
+  click: MousePointerClick,
+  fill: TextCursorInput,
+  press: Keyboard,
+  copy: Clipboard,
+  submit: MousePointerClick,
+};
+
+const STEP_ICONS: Record<Step["kind"], IconNode> = {
+  navigate: Globe,
+  switchTab: ArrowLeftRight,
+  openTab: AppWindow,
+  closeTab: PanelTopClose,
+  click: MousePointerClick,
+  fill: TextCursorInput,
+  press: Keyboard,
+  waitFor: Hourglass,
+  extract: ScanText,
+  extractList: ListTree,
+  copyFromClipboard: Clipboard,
+  forEach: Repeat,
+  assert: ShieldCheck,
+};
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function host(url: string) {
   try {
@@ -34,54 +92,76 @@ function host(url: string) {
   }
 }
 
+function timeAgo(ts: number): string {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+async function api<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    method: init?.method ?? "GET",
+    headers: init?.body === undefined ? undefined : { "content-type": "application/json" },
+    body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  return body as T;
+}
+
+// ---- Recorded steps ----
+
 /** Called with the step's first event index and the new decision (true = noise, false = keep). */
 type OnDecide = (eventIndex: number, noise: boolean) => void;
 
 function renderSteps(list: HTMLOListElement, steps: SemanticStep[], events: RecordedEvent[], onDecide?: OnDecide) {
-  list.replaceChildren();
-  if (steps.length === 0) list.append(el("li", "empty", "No steps yet — interact with a page."));
-  for (const step of steps) {
-    const li = el("li", step.noise ? "noise" : undefined);
-    const body = el("div");
-    body.append(el("div", "desc", describeStep(step)));
-    if (step.noise) body.append(el("div", "why", `Likely noise: ${step.noise.reason}`));
-    const inventory = step.events.map((i) => events[i]?.inventory).find(Boolean);
-    const meta = [
-      host(step.url),
-      step.effect ? describeEffect(step.effect) : "",
-      inventory ? `${inventory.length} elements available` : "",
-      step.keptByUser ? "kept by you" : "",
-    ].filter(Boolean).join(" · ");
-    body.append(el("div", "meta", meta));
-    if (onDecide) {
-      const toggle = el("button", "ghost toggle", step.noise ? "Keep step" : "Mark as noise");
-      toggle.onclick = () => onDecide(step.events[0], !step.noise);
-      body.append(toggle);
-    }
-    const shot = step.events.map((i) => events[i]?.screenshotId).find(Boolean);
-    if (shot) {
-      const img = el("img");
-      img.src = `${API}/screenshots/${shot}`;
-      img.alt = "";
-      img.loading = "lazy";
-      img.onclick = () => img.classList.toggle("big");
-      body.append(img);
-    }
-    li.append(body);
-    list.append(li);
-  }
+  if (steps.length === 0) return void list.replaceChildren(h("li", "empty", "Nothing yet. Use the page as you normally would."));
+  list.replaceChildren(
+    ...steps.map((step) => {
+      const meta = [host(step.url), step.effect ? describeEffect(step.effect) : "", step.keptByUser ? "kept by you" : ""].filter(Boolean).join(", ");
+      const shot = step.events.map((i) => events[i]?.screenshotId).find(Boolean);
+      const side = h("div", "side");
+      const li = h(
+        "li",
+        step.noise ? "noise" : "",
+        h("span", "node", icon(RECORDED_ICONS[step.kind])),
+        h("div", {}, h("div", "desc", describeStep(step)), h("div", "meta", meta), step.noise && h("div", "why", `Likely noise: ${step.noise.reason}`)),
+        side,
+      );
+      if (shot) {
+        let full: HTMLImageElement | undefined;
+        const show = iconButton(ImageIcon, "Show screenshot", () => toggle());
+        const toggle = () => {
+          if (full) full.remove();
+          full = full ? undefined : h("img", { class: "full", src: `${API}/screenshots/${shot}`, alt: "Screenshot", onclick: () => toggle() });
+          if (full) li.append(full);
+          show.setAttribute("aria-pressed", String(Boolean(full)));
+        };
+        side.append(show);
+      }
+      if (onDecide) {
+        side.append(iconButton(step.noise ? Eye : EyeOff, step.noise ? "Keep this step" : "Mark as noise", () => onDecide(step.events[0], !step.noise)));
+      }
+      return li;
+    }),
+  );
 }
+
+// ---- Status and recording ----
 
 function renderStatus() {
   const conn = $("conn");
   conn.classList.toggle("on", status.connected);
-  conn.querySelector(".label")!.textContent = status.connected ? "Server connected" : "Server offline";
+  conn.querySelector(".label")!.textContent = status.connected ? "Connected" : "Server offline";
 
   const toggle = $<HTMLButtonElement>("toggle");
   const recording = Boolean(status.recording);
-  toggle.textContent = recording ? "Stop" : "Record";
+  toggle.querySelector(".label")!.textContent = recording ? "Stop" : "Record";
   toggle.classList.toggle("stop", recording);
   $<HTMLInputElement>("name").disabled = recording;
+  $<HTMLInputElement>("name").placeholder = recording ? "Recording…" : "Name a new recording";
   $("live").hidden = !recording;
   $("live-name").textContent = status.recording?.name ?? "";
 }
@@ -94,24 +174,60 @@ async function refreshStatus() {
   renderStatus();
 }
 
+function renderLive() {
+  const steps = mergeEvents(liveEvents);
+  $("live-count").textContent = steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"}` : "";
+  renderSteps($<HTMLOListElement>("live-steps"), steps, liveEvents);
+}
+
+// ---- Libraries ----
+
+const offline = () => h("li", "empty", "Start the server to see your recordings: ", h("code", {}, "pnpm dev:server"));
+
 async function loadLibrary() {
   const list = $<HTMLUListElement>("recordings");
-  list.replaceChildren();
   let rows: { id: string; name: string; createdAt: number; eventCount: number }[];
   try {
-    rows = await (await fetch(`${API}/recordings`)).json();
+    rows = await api("/recordings");
   } catch {
-    list.append(el("li", "empty", "Start the server: pnpm dev:server"));
-    return;
+    return void list.replaceChildren(offline());
   }
-  if (rows.length === 0) list.append(el("li", "empty", "No recordings yet."));
-  for (const r of rows) {
-    const li = el("li");
-    li.append(el("div", undefined, r.name), el("div", "meta", `${new Date(r.createdAt).toLocaleString()} · ${r.eventCount} events`));
-    li.onclick = () => openRecording(r.id);
-    list.append(li);
-  }
+  if (rows.length === 0) return void list.replaceChildren(h("li", "empty", "No recordings yet. Name one above and press Record."));
+  list.replaceChildren(
+    ...rows.map((r) =>
+      h("li", { onclick: () => openRecording(r.id), title: "Open" },
+        h("div", {}, h("div", "name", r.name), h("div", "meta", `${timeAgo(r.createdAt)}, ${r.eventCount} events`))),
+    ),
+  );
 }
+
+async function loadWorkflows() {
+  const list = $<HTMLUListElement>("workflow-list");
+  let rows: { id: string; name: string; createdAt: number }[];
+  try {
+    rows = await api("/workflows");
+  } catch {
+    return void list.replaceChildren(offline());
+  }
+  if (rows.length === 0) return void list.replaceChildren(h("li", "empty", "No workflows yet. Open a recording and choose Automate."));
+  list.replaceChildren(
+    ...rows.map((wf) => {
+      const stop = (fn: () => void) => (e: Event) => (e.stopPropagation(), fn());
+      return h(
+        "li",
+        { onclick: () => openWorkflow(wf.id), title: "Review" },
+        h("div", {}, h("div", "name", wf.name), h("div", "meta", timeAgo(wf.createdAt))),
+        h("div", "actions",
+          iconButton(PenLine, "Open in editor", stop(() => openEditor(wf.id))),
+          iconButton(FlaskConical, "Test on 1 item", stop(() => startRun(wf.id, { limit: 1 }))),
+          h("button", { class: "btn small", type: "button", onclick: stop(() => startRun(wf.id, {})) }, icon(Play), "Run"),
+        ),
+      );
+    }),
+  );
+}
+
+// ---- Recording detail and compiling ----
 
 type CompileResponse = {
   workflow: Workflow;
@@ -121,97 +237,81 @@ type CompileResponse = {
   error?: string;
 };
 
-function renderPlan(list: HTMLOListElement, steps: Step[]) {
-  list.replaceChildren();
-  for (const step of steps) {
-    const li = el("li", undefined, describeWorkflowStep(step));
-    if (step.kind === "forEach") {
-      const body = el("ol");
-      renderPlan(body, step.body);
-      li.append(body);
-    }
-    list.append(li);
-  }
+function plan(steps: Step[]): HTMLElement[] {
+  return steps.map((step) =>
+    h("li", {}, icon(STEP_ICONS[step.kind]), h("span", {}, capitalize(describeWorkflowStep(step))), step.kind === "forEach" && h("ol", {}, ...plan(step.body))),
+  );
 }
 
 function renderCompiled(res: CompileResponse) {
   const { workflow, preview } = res;
   const notes = workflow.notes;
   $("compiled").hidden = false;
-  $("compiled-summary").textContent = notes?.summary ?? workflow.name;
-  renderPlan($<HTMLOListElement>("compiled-steps"), workflow.steps);
-  const list = $<HTMLUListElement>("compiled-notes");
-  list.replaceChildren();
-  const note = (cls: string, text: string) => list.append(el("li", cls, text));
-  for (const p of notes?.problems ?? []) note("problem", `Problem: ${p}`);
-  if (workflow.closePopups) note("", "Closes tabs that pages open on other sites (ads) while it runs.");
-  for (const a of notes?.assumptions ?? []) note("", `Assumed: ${a}`);
-  for (const x of notes?.excludedSteps ?? []) note("muted", `Left out ${x.step}: ${x.reason}`);
+  $("compiled-name").textContent = workflow.name;
+  $("compiled-summary").textContent = notes?.summary ?? "";
+  $("compiled-steps").replaceChildren(...plan(workflow.steps));
+  const items: HTMLElement[] = [];
+  const note = (cls: string, text: string) => items.push(h("li", cls, text));
+  for (const p of notes?.problems ?? []) note("problem", p);
   for (const l of preview?.lists ?? []) {
     const first = l.sample[0];
     const example = first ? Object.entries(first).find(([k, v]) => !k.startsWith("_") && v)?.[1] : undefined;
-    note("", `Found ${l.count} ${l.name} on the live page${example ? `, e.g. "${String(example).slice(0, 60)}"` : ""}`);
+    note("", `Found ${l.count} ${l.name} on the live page${example ? `, like “${String(example).slice(0, 60)}”` : ""}`);
   }
-  if (res.checkedOnLivePage === false) note("muted", "Not checked on the live page (browser busy or disconnected).");
+  if (res.checkedOnLivePage === false) note("muted", "Not checked on the live page; the browser was busy or disconnected.");
+  if (workflow.closePopups) note("", "Closes tabs that pages open on other sites, like ads, while it runs.");
+  for (const a of notes?.assumptions ?? []) note("", a);
+  for (const x of notes?.excludedSteps ?? []) note("muted", `Left out ${x.step}: ${x.reason}`);
+  $("compiled-notes").replaceChildren(...items);
   renderFollowup(workflow);
   $<HTMLButtonElement>("compiled-edit").onclick = () => openEditor(workflow.id);
   $<HTMLButtonElement>("compiled-dry").onclick = () => startRun(workflow.id, { limit: 1 });
   $<HTMLButtonElement>("compiled-run").onclick = () => startRun(workflow.id, {});
 }
 
+function working(el: HTMLElement, text: string) {
+  el.className = "ask-status working";
+  el.textContent = text;
+}
+function done(el: HTMLElement, text = "") {
+  el.className = "ask-status";
+  el.textContent = text;
+}
+
 /** Answer boxes for Claude's questions, plus a free-form change request. */
 function renderFollowup(workflow: Workflow) {
   const questions = workflow.notes?.questions ?? [];
-  const box = $("compiled-questions");
-  box.replaceChildren();
-  const inputs = questions.map((q, i) => {
-    const wrap = el("div", "question");
-    const label = el("label", undefined, q);
-    const input = el("textarea");
-    input.rows = 2;
-    input.id = `answer-${i}`;
-    label.htmlFor = input.id;
-    input.placeholder = "Your answer";
-    wrap.append(label, input);
-    box.append(wrap);
-    return input;
-  });
+  const inputs = questions.map((q, i) => h("textarea", { id: `answer-${i}`, rows: 2, placeholder: "Your answer" }));
+  $("compiled-questions").replaceChildren(
+    ...questions.map((q, i) => h("div", "question", h("label", { htmlFor: `answer-${i}` }, q), inputs[i])),
+  );
   const request = $<HTMLTextAreaElement>("change-request");
   request.value = "";
-  $("refine-status").textContent = "";
+  done($("refine-status"));
   $<HTMLButtonElement>("refine").onclick = async () => {
     const answers = questions.map((question, i) => ({ question, answer: inputs[i].value.trim() })).filter((a) => a.answer);
     if (!answers.length && !request.value.trim()) return (inputs[0] ?? request).focus();
     const button = $<HTMLButtonElement>("refine");
-    const status = $("refine-status");
+    const statusEl = $("refine-status");
     button.disabled = true;
-    status.textContent = "Claude is updating the automation…";
+    working(statusEl, "Claude is updating the workflow…");
     try {
-      const res = await fetch(`${API}/workflows/${workflow.id}/refine`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ answers, request: request.value.trim() }),
-      });
-      const body = (await res.json()) as CompileResponse;
-      if (!res.ok) {
-        status.textContent = `Could not update: ${body.error}`;
-        return;
-      }
+      const body = await api<CompileResponse>(`/workflows/${workflow.id}/refine`, { method: "POST", body: { answers, request: request.value.trim() } });
       renderCompiled(body);
-      $("refine-status").textContent = "Updated.";
+      done($("refine-status"), "Updated.");
       loadWorkflows();
     } catch (err) {
-      status.textContent = `Could not reach the server: ${(err as Error).message}`;
+      done(statusEl, `Couldn't update: ${(err as Error).message}`);
     } finally {
       button.disabled = false;
     }
   };
 }
 
-/** Opens a saved workflow's review, under the recording it was compiled from. */
+/** Opens a saved workflow's review, under the recording it was compiled from; the editor otherwise. */
 async function openWorkflow(id: string) {
-  const workflow = (await (await fetch(`${API}/workflows/${id}`)).json()) as Workflow;
-  if (!workflow.recordingId) return;
+  const workflow = await api<Workflow>(`/workflows/${id}`);
+  if (!workflow.recordingId) return openEditor(id);
   await openRecording(workflow.recordingId);
   $<HTMLTextAreaElement>("instruction").value = workflow.instruction ?? "";
   renderCompiled({ workflow, preview: null });
@@ -221,176 +321,174 @@ async function compileRecording(id: string) {
   const instruction = $<HTMLTextAreaElement>("instruction").value.trim();
   if (!instruction) return $<HTMLTextAreaElement>("instruction").focus();
   const button = $<HTMLButtonElement>("compile");
-  const status = $("compile-status");
+  const statusEl = $("compile-status");
   button.disabled = true;
   $("compiled").hidden = true;
-  status.textContent = "Claude is building the automation; this can take a minute or two…";
+  working(statusEl, "Claude is building the workflow. This can take a minute or two.");
   try {
-    const res = await fetch(`${API}/recordings/${id}/compile`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ instruction }),
-    });
-    const body = (await res.json()) as CompileResponse;
-    if (!res.ok) {
-      status.textContent = `Could not automate: ${body.error}`;
-      return;
-    }
-    status.textContent = "";
+    const body = await api<CompileResponse>(`/recordings/${id}/compile`, { method: "POST", body: { instruction } });
+    done(statusEl);
     renderCompiled(body);
     loadWorkflows();
   } catch (err) {
-    status.textContent = `Could not reach the server: ${(err as Error).message}`;
+    done(statusEl, `Couldn't automate it: ${(err as Error).message}`);
   } finally {
     button.disabled = false;
   }
 }
 
 async function openRecording(id: string) {
-  const rec = (await (await fetch(`${API}/recordings/${id}`)).json()) as Recording;
+  const rec = await api<Recording>(`/recordings/${id}`);
   if (openRecordingId !== id) {
     $("compiled").hidden = true;
-    $("compile-status").textContent = "";
+    done($("compile-status"));
+    $<HTMLTextAreaElement>("instruction").value = "";
   }
   openRecordingId = id;
   $("detail-name").textContent = rec.name;
-  $<HTMLButtonElement>("compile").onclick = () => compileRecording(id);
-  const decide: OnDecide = async (eventIndex, noise) => {
-    await fetch(`${API}/recordings/${id}/overrides/${eventIndex}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ noise }),
-    });
+  const steps = mergeEvents(rec.events, rec.overrides);
+  const noise = steps.filter((s) => s.noise).length;
+  $("detail-meta").textContent = `Recorded ${timeAgo(rec.createdAt)}`;
+  $("detail-count").textContent = `${steps.length} steps${noise ? `, ${noise} likely noise` : ""}`;
+  $("automate").onsubmit = (e) => {
+    e.preventDefault();
+    compileRecording(id);
+  };
+  const decide: OnDecide = async (eventIndex, isNoise) => {
+    await api(`/recordings/${id}/overrides/${eventIndex}`, { method: "PUT", body: { noise: isNoise } });
     openRecording(id);
   };
-  renderSteps($<HTMLOListElement>("detail-steps"), mergeEvents(rec.events, rec.overrides), rec.events, decide);
-  $("library").hidden = true;
+  renderSteps($<HTMLOListElement>("detail-steps"), steps, rec.events, decide);
+  $("home").hidden = true;
   $("detail").hidden = false;
+  scrollTo(0, 0);
 }
 
 function closeDetail() {
   openRecordingId = undefined;
   $("detail").hidden = true;
-  $("library").hidden = false;
+  $("home").hidden = false;
   loadLibrary();
+  loadWorkflows();
 }
 
-const ITEM_ICON: Record<string, string> = { ok: "✓", failed: "✗", running: "▸", pending: "·" };
+// ---- Runs ----
+
 let runId: string | undefined;
-
-async function loadWorkflows() {
-  const list = $<HTMLUListElement>("workflow-list");
-  let rows: { id: string; name: string; createdAt: number }[];
-  try {
-    rows = await (await fetch(`${API}/workflows`)).json();
-  } catch {
-    return; // loadLibrary already shows the "start the server" hint
-  }
-  list.replaceChildren();
-  if (rows.length === 0) list.append(el("li", "empty", "No workflows yet. Try: pnpm fixtures:workflow"));
-  for (const wf of rows) {
-    const li = el("li");
-    const actions = el("div", "actions");
-    const edit = el("button", undefined, "Edit");
-    const dry = el("button", undefined, "Dry run (1 item)");
-    const full = el("button", "primary", "Run all");
-    edit.onclick = () => openEditor(wf.id);
-    dry.onclick = () => startRun(wf.id, { limit: 1 });
-    full.onclick = () => startRun(wf.id, {});
-    actions.append(edit, dry, full);
-    const name = el("div", "name", wf.name);
-    name.title = "Review and update";
-    name.onclick = () => openWorkflow(wf.id);
-    li.append(name, actions);
-    list.append(li);
-  }
-}
+let shownRun: RunSnapshot | undefined;
 
 function openEditor(workflowId: string) {
   chrome.tabs.create({ url: chrome.runtime.getURL(`src/editor/index.html?id=${encodeURIComponent(workflowId)}`) });
 }
 
 async function startRun(workflowId: string, options: object) {
-  const res = await fetch(`${API}/workflows/${workflowId}/runs`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(options),
-  });
-  const body = await res.json();
-  if (!res.ok) return alert(`Could not start: ${body.error}`);
-  runId = body.id;
-  renderRun(body);
+  try {
+    const run = await api<RunSnapshot>(`/workflows/${workflowId}/runs`, { method: "POST", body: options });
+    runId = run.id;
+    renderRun(run);
+    if ($("home").hidden) closeDetail();
+  } catch (err) {
+    toast(`Couldn't start the run: ${(err as Error).message}`, { bad: true });
+  }
 }
 
+const ITEM_ICONS: Record<string, IconNode> = { ok: Check, failed: X, running: LoaderCircle, pending: Circle };
+const STATUS_TEXT: Record<RunSnapshot["status"], string> = { running: "Running", paused: "Paused", stopped: "Stopped", done: "Done", failed: "Failed" };
+
 function renderRun(run: RunSnapshot | null) {
+  shownRun = run ?? undefined;
   $("run").hidden = !run;
   if (!run) return;
   const finished = Boolean(run.finishedAt);
-  const done = run.items.filter((i) => i.status === "ok" || i.status === "failed").length;
+  const settled = run.items.filter((i) => i.status === "ok" || i.status === "failed").length;
+  const failed = run.items.filter((i) => i.status === "failed").length;
+
+  const runIcon = $("run-icon");
+  const state = run.status === "done" && !failed ? "done" : run.status === "failed" || failed ? "failed" : finished ? "" : "running";
+  runIcon.className = `run-icon ${state}`;
+  runIcon.replaceChildren(icon(state === "done" ? CircleCheck : state === "failed" ? CircleX : run.status === "paused" ? Pause : Play));
   $("run-title").textContent = run.workflowName;
-  $("run-status").textContent =
-    `${run.status}${run.items.length ? ` · ${done}/${run.items.length} items` : ""}${run.error ? ` · ${run.error}` : ""}`;
+  $("run-bar").style.width = run.items.length ? `${(settled / run.items.length) * 100}%` : finished ? "100%" : "0";
+  const parts = [STATUS_TEXT[run.status]];
+  if (run.items.length) parts.push(`${settled} of ${run.items.length} items`);
+  if (failed) parts.push(`${failed} failed`);
+  $("run-status").replaceChildren(parts.join(", "), run.error ? h("span", "err", `. ${run.error}`) : "");
+
   const pause = $<HTMLButtonElement>("run-pause");
-  pause.textContent = run.status === "paused" ? "Resume" : "Pause";
   pause.hidden = finished;
-  $<HTMLButtonElement>("run-stop").textContent = finished ? "Close" : "Stop";
+  pause.replaceChildren(icon(run.status === "paused" ? Play : Pause));
+  pause.setAttribute("aria-label", run.status === "paused" ? "Resume" : "Pause");
+  pause.title = pause.getAttribute("aria-label")!;
+  const stop = $<HTMLButtonElement>("run-stop");
+  stop.replaceChildren(icon(finished ? X : Square));
+  stop.setAttribute("aria-label", finished ? "Close" : "Stop");
+  stop.title = stop.getAttribute("aria-label")!;
 
-  const heals = $<HTMLUListElement>("run-heals");
-  heals.replaceChildren();
   // Older saved runs have no heals.
-  (run.heals ?? []).forEach((heal, i) => {
-    const li = el("li", heal.reverted ? "reverted" : undefined);
-    const name = (t: typeof heal.to) => t.fingerprint.name ?? t.fingerprint.role ?? t.description;
-    li.append(
-      el("span", undefined, `${heal.from.description}: now "${name(heal.to)}" (was "${name(heal.from)}")${heal.reverted ? " · undone" : ""}`),
-      el("span", "why", heal.reason),
-    );
-    if (!heal.reverted) {
-      const undo = el("button", "ghost", "Undo");
-      undo.disabled = !finished;
-      undo.title = finished ? "Put the original element back in the workflow" : "Available when the run ends";
-      undo.onclick = async () => {
-        const res = await fetch(`${API}/runs/${run.id}/heals/${i}/revert`, { method: "POST" });
-        if (!res.ok) alert(`Could not undo: ${(await res.json()).error}`);
-        pollRun();
-      };
-      li.append(undo);
-    }
-    heals.append(li);
-  });
+  const name = (t: { description: string; fingerprint: { name?: string; role?: string } }) => t.fingerprint.name ?? t.fingerprint.role ?? t.description;
+  $("run-heals").replaceChildren(
+    ...(run.heals ?? []).map((heal, i) => {
+      const li = h(
+        "li",
+        heal.reverted ? "reverted" : "",
+        icon(Bandage),
+        h("span", "what", heal.reverted ? `Put back “${name(heal.from)}” for ${heal.from.description}` : `${heal.from.description} now uses “${name(heal.to)}” instead of “${name(heal.from)}”`),
+        h("span", "why", heal.reason),
+      );
+      if (!heal.reverted) {
+        const undo = h("button", { class: "btn small", type: "button", disabled: !finished, title: finished ? "Put the original element back in the workflow" : "Available when the run ends" }, "Undo");
+        undo.onclick = async () => {
+          try {
+            await api(`/runs/${run.id}/heals/${i}/revert`, { method: "POST" });
+          } catch (err) {
+            toast(`Couldn't undo: ${(err as Error).message}`, { bad: true });
+          }
+          pollRun();
+        };
+        li.append(undo);
+      }
+      return li;
+    }),
+  );
 
-  const items = $<HTMLOListElement>("run-items");
-  items.replaceChildren();
-  for (const item of run.items) {
-    const li = el("li");
-    li.append(el("span", item.status, ITEM_ICON[item.status]), el("span", undefined, item.label));
-    if (item.error) li.append(el("span", "err", item.error));
-    items.append(li);
-  }
-  const log = $<HTMLOListElement>("run-log");
-  log.replaceChildren(...run.log.slice(-100).map((l) => el("li", l.level, `${new Date(l.ts).toLocaleTimeString()} ${l.message}`)));
+  $("run-items").replaceChildren(
+    ...run.items.map((item) =>
+      h("li", item.status, h("span", `icon ${item.status}`, icon(ITEM_ICONS[item.status])), h("span", "label", item.label), item.error && h("span", "err", item.error)),
+    ),
+  );
+  $("run-log").replaceChildren(
+    ...run.log.slice(-100).map((l) => h("li", l.level, h("span", "time", new Date(l.ts).toLocaleTimeString([], { hour12: false })), l.message)),
+  );
 }
 
 async function pollRun() {
   try {
-    const current = (await (await fetch(`${API}/runs/current`)).json()) as RunSnapshot | null;
+    const current = await api<RunSnapshot | null>("/runs/current");
     if (current) runId = current.id;
     if (!runId) return renderRun(null);
-    renderRun(current ?? ((await (await fetch(`${API}/runs/${runId}`)).json()) as RunSnapshot));
+    renderRun(current ?? (await api<RunSnapshot>(`/runs/${runId}`)));
   } catch {
-    // server offline; status line already says so
+    // Server offline; the status line already says so.
   }
 }
 
+// ---- Wiring ----
+
+setUpTheme($("theme"));
+$("refresh").append(icon(RefreshCw));
+$("back").append(icon(ArrowLeft), "Back");
+$("delete").append(icon(Trash2));
+$("automate").querySelector(".composer-icon")!.append(icon(Sparkles));
+$("compiled").querySelector(".result-icon")!.append(icon(Sparkles));
+
 $("run-pause").onclick = async () => {
-  if (!runId) return;
-  const paused = $("run-pause").textContent === "Resume";
-  await fetch(`${API}/runs/${runId}/${paused ? "resume" : "pause"}`, { method: "POST" });
+  if (!runId || !shownRun) return;
+  await fetch(`${API}/runs/${runId}/${shownRun.status === "paused" ? "resume" : "pause"}`, { method: "POST" });
   pollRun();
 };
 $("run-stop").onclick = async () => {
   if (!runId) return;
-  if ($("run-stop").textContent === "Close") {
+  if (shownRun?.finishedAt) {
     runId = undefined;
     return renderRun(null);
   }
@@ -398,7 +496,8 @@ $("run-stop").onclick = async () => {
   pollRun();
 };
 
-$("toggle").onclick = async () => {
+$("record-form").onsubmit = async (e) => {
+  e.preventDefault();
   if (status.recording) {
     await chrome.runtime.sendMessage({ type: "stopRecording" });
     await refreshStatus();
@@ -406,11 +505,14 @@ $("toggle").onclick = async () => {
     setTimeout(loadLibrary, 300);
   } else {
     liveEvents = [];
-    renderSteps($<HTMLOListElement>("live-steps"), [], []);
+    renderLive();
     await chrome.runtime.sendMessage({ type: "startRecording", name: $<HTMLInputElement>("name").value.trim() });
     $<HTMLInputElement>("name").value = "";
     await refreshStatus();
   }
+};
+$("instruction").onkeydown = (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && openRecordingId) compileRecording(openRecordingId);
 };
 $("refresh").onclick = () => {
   loadLibrary();
@@ -418,15 +520,16 @@ $("refresh").onclick = () => {
 };
 $("back").onclick = closeDetail;
 $("delete").onclick = async () => {
-  if (!openRecordingId || !confirm("Delete this recording?")) return;
-  await fetch(`${API}/recordings/${openRecordingId}`, { method: "DELETE" });
+  if (!openRecordingId || !confirm("Delete this recording? This can't be undone.")) return;
+  await api(`/recordings/${openRecordingId}`, { method: "DELETE" }).catch(() => {});
   closeDetail();
+  toast("Recording deleted");
 };
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type !== "recorder/event" || msg.recordingId !== status.recording?.id) return;
   liveEvents.push(msg.data as RecordedEvent);
-  renderSteps($<HTMLOListElement>("live-steps"), mergeEvents(liveEvents), liveEvents);
+  renderLive();
 });
 
 refreshStatus();

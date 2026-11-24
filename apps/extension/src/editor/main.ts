@@ -29,7 +29,6 @@ import {
   type IconNode,
   Keyboard,
   ListTree,
-  Moon,
   MousePointerClick,
   PanelTopClose,
   Plus,
@@ -39,15 +38,14 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
-  Sun,
   TextCursorInput,
   Trash2,
   TriangleAlert,
   Undo2,
   X,
-  createElement,
 } from "lucide";
 import { API_URL as API } from "../config.js";
+import { $, type Child, h, icon, iconButton, setUpTheme, toast } from "../ui/dom.js";
 import {
   KIND_LABELS,
   type StepDiff,
@@ -68,30 +66,6 @@ import {
   replaceStep,
   templatesAt,
 } from "./model.js";
-
-// ---- DOM helpers ----
-
-type Attrs = Record<string, string | number | boolean | ((e: Event) => void) | undefined>;
-type Child = Node | string | false | null | undefined;
-
-function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Attrs | string = {}, ...children: Child[]): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(typeof attrs === "string" ? { class: attrs } : attrs)) {
-    if (v === undefined || v === false) continue;
-    if (typeof v === "function") e.addEventListener(k.replace(/^on/, ""), v);
-    else if (k === "class") e.className = String(v);
-    else if (k in e && typeof (e as unknown as Record<string, unknown>)[k] !== "object") (e as unknown as Record<string, unknown>)[k] = v;
-    else e.setAttribute(k, String(v));
-  }
-  for (const c of children) if (c !== false && c !== null && c !== undefined) e.append(c);
-  return e;
-}
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const icon = (node: IconNode) => createElement(node, { class: "lucide", "aria-hidden": "true" });
-
-function iconButton(node: IconNode, label: string, onClick: (e: Event) => void, cls = "icon-btn small"): HTMLButtonElement {
-  return h("button", { class: cls, type: "button", "aria-label": label, title: label, onclick: onClick }, icon(node));
-}
 
 const KIND_ICONS: Record<StepKind, IconNode> = {
   navigate: Globe,
@@ -130,25 +104,6 @@ async function api<T>(path: string, init?: { method?: string; body?: unknown }):
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
   return body as T;
-}
-
-// ---- Theme: dark by default ----
-
-const THEME_KEY = "d2a-editor-theme";
-function applyTheme(theme: "dark" | "light") {
-  document.documentElement.dataset.theme = theme;
-  const button = $("theme");
-  button.replaceChildren(icon(theme === "dark" ? Sun : Moon));
-  const label = `Switch to ${theme === "dark" ? "light" : "dark"} theme`;
-  button.setAttribute("aria-label", label);
-  button.title = label;
-}
-function storedTheme(): "dark" | "light" {
-  try {
-    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
-  } catch {
-    return "dark";
-  }
 }
 
 // ---- State ----
@@ -218,19 +173,6 @@ function stepById(id: string): Step | undefined {
 function patchStep(id: string, fn: (s: Step) => Step, opts: { typing?: string; full?: boolean } = {}) {
   const step = stepById(id);
   if (step) change(replaceStep(current, fn(step)), opts);
-}
-
-// ---- Toasts ----
-
-function toast(message: string, opts: { action?: { label: string; run: () => void }; bad?: boolean } = {}) {
-  const el = h("div", { class: `toast ${opts.bad ? "bad" : ""}`, role: "status" }, h("span", {}, message));
-  const dismiss = () => el.remove();
-  if (opts.action) {
-    const { label, run } = opts.action;
-    el.append(h("button", { class: "btn small", type: "button", onclick: () => (run(), dismiss()) }, label));
-  }
-  $("toasts").append(el);
-  setTimeout(dismiss, opts.bad ? 8000 : 5000);
 }
 
 // ---- What the recording saw at a step ----
@@ -1268,7 +1210,6 @@ async function loadRecording(id: string) {
 }
 
 async function load() {
-  applyTheme(storedTheme());
   if (!workflowId) return void (document.body.textContent = "No workflow given.");
   try {
     saved = await api<Workflow>(`/workflows/${workflowId}`);
@@ -1300,15 +1241,7 @@ $<HTMLInputElement>("name").oninput = (e) => change({ ...current, name: (e.targe
 $("save").onclick = () => save();
 $("undo").onclick = undo;
 $("redo").onclick = redo;
-$("theme").onclick = () => {
-  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  applyTheme(next);
-  try {
-    localStorage.setItem(THEME_KEY, next);
-  } catch {
-    // Not remembered; the theme still applies for this visit.
-  }
-};
+setUpTheme($("theme"));
 $("problems-pill").onclick = () => {
   const first = checkWorkflow(current).find((p) => p.stepId);
   if (first?.stepId) return select(first.stepId);

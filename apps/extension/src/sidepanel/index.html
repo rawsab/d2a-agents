@@ -1,91 +1,113 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>D2A Recorder</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <header>
-      <h1>D2A Recorder</h1>
+    <header class="top">
       <span id="conn" class="conn"><span class="dot"></span><span class="label">Server offline</span></span>
+      <div class="spacer"></div>
+      <button id="theme" class="icon-btn" aria-label="Switch to light theme"></button>
     </header>
 
-    <section id="record">
-      <div class="row">
-        <input id="name" placeholder="Name this recording" />
-        <button id="toggle" class="primary">Record</button>
-      </div>
-    </section>
-
-    <section id="live" hidden>
-      <h2><span class="rec-dot"></span>Recording: <span id="live-name"></span></h2>
-      <ol id="live-steps" class="steps"></ol>
-    </section>
-
-    <section id="run" hidden>
-      <div class="row between">
-        <h2 id="run-title"></h2>
-        <div class="row">
-          <button id="run-pause" class="ghost">Pause</button>
-          <button id="run-stop" class="ghost danger">Stop</button>
+    <main id="home">
+      <section class="recorder">
+        <form id="record-form" class="record-bar">
+          <input id="name" placeholder="Name a new recording" aria-label="Recording name" autocomplete="off" />
+          <button id="toggle" class="btn rec" type="submit"><span class="rec-dot"></span><span class="label">Record</span></button>
+        </form>
+        <div id="live" class="live" hidden>
+          <p class="live-head"><span class="rec-dot on"></span>Recording <strong id="live-name"></strong><span id="live-count" class="count"></span></p>
+          <ol id="live-steps" class="steps"></ol>
         </div>
-      </div>
-      <p id="run-status" class="hint"></p>
-      <ul id="run-heals" class="heals"></ul>
-      <ol id="run-items" class="items"></ol>
-      <details>
-        <summary class="hint">Log</summary>
-        <ol id="run-log" class="log"></ol>
-      </details>
-    </section>
+      </section>
 
-    <section id="workflows">
-      <div class="row between">
-        <h2>Workflows</h2>
-      </div>
-      <ul id="workflow-list" class="recordings"></ul>
-    </section>
+      <section id="run" class="run" hidden aria-live="polite">
+        <div class="run-head">
+          <span id="run-icon" class="run-icon" aria-hidden="true"></span>
+          <strong id="run-title" class="run-title"></strong>
+          <div class="spacer"></div>
+          <button id="run-pause" class="icon-btn small" aria-label="Pause"></button>
+          <button id="run-stop" class="icon-btn small" aria-label="Stop"></button>
+        </div>
+        <div class="progress"><div id="run-bar"></div></div>
+        <p id="run-status" class="run-status"></p>
+        <ul id="run-heals" class="heals"></ul>
+        <ol id="run-items" class="items"></ol>
+        <details class="log-wrap">
+          <summary>Log</summary>
+          <ol id="run-log" class="log"></ol>
+        </details>
+      </section>
 
-    <section id="library">
-      <div class="row between">
-        <h2>Recordings</h2>
-        <button id="refresh" class="ghost">Refresh</button>
-      </div>
-      <ul id="recordings" class="recordings"></ul>
-    </section>
+      <section>
+        <div class="section-head"><h2>Workflows</h2></div>
+        <ul id="workflow-list" class="list"></ul>
+      </section>
 
-    <section id="detail" hidden>
-      <div class="row between">
-        <button id="back" class="ghost">← Back</button>
-        <button id="delete" class="ghost danger">Delete</button>
+      <section>
+        <div class="section-head">
+          <h2>Recordings</h2>
+          <button id="refresh" class="icon-btn small" aria-label="Refresh" title="Refresh"></button>
+        </div>
+        <ul id="recordings" class="list"></ul>
+      </section>
+    </main>
+
+    <main id="detail" hidden>
+      <div class="detail-top">
+        <button id="back" class="btn ghost small" type="button"></button>
+        <div class="spacer"></div>
+        <button id="delete" class="icon-btn small danger" aria-label="Delete recording" title="Delete recording"></button>
       </div>
-      <h2 id="detail-name"></h2>
-      <div class="automate">
-        <textarea id="instruction" rows="2" placeholder="What should be repeated? e.g. Repeat for every video in the playlist"></textarea>
-        <button id="compile" class="primary">Automate</button>
-        <p id="compile-status" class="hint"></p>
-        <div id="compiled" hidden>
-          <p id="compiled-summary"></p>
-          <ol id="compiled-steps" class="plan"></ol>
-          <ul id="compiled-notes" class="notes"></ul>
-          <div id="followup" class="followup">
-            <div id="compiled-questions"></div>
-            <textarea id="change-request" rows="2" placeholder="Anything to change? e.g. Skip videos that were already downloaded"></textarea>
-            <button id="refine">Update automation</button>
-            <p id="refine-status" class="hint"></p>
-          </div>
+      <h1 id="detail-name" class="detail-name"></h1>
+      <p id="detail-meta" class="help"></p>
+
+      <form id="automate" class="composer">
+        <span class="composer-icon" aria-hidden="true"></span>
+        <textarea id="instruction" rows="2" aria-label="What should be repeated"
+          placeholder="What should it repeat? e.g. Do this for every video in the playlist"></textarea>
+      </form>
+      <div class="composer-actions">
+        <p id="compile-status" class="ask-status"></p>
+        <div class="spacer"></div>
+        <button id="compile" class="btn ai small" type="submit" form="automate">Automate</button>
+      </div>
+
+      <section id="compiled" class="result" hidden>
+        <div class="result-head">
+          <span class="result-icon" aria-hidden="true"></span>
+          <strong id="compiled-name"></strong>
+        </div>
+        <p id="compiled-summary" class="result-summary"></p>
+        <ol id="compiled-steps" class="plan"></ol>
+        <ul id="compiled-notes" class="notes"></ul>
+        <div id="compiled-questions" class="questions"></div>
+        <div class="followup">
+          <textarea id="change-request" rows="2" aria-label="Changes to make"
+            placeholder="Anything to change? e.g. Skip videos already downloaded"></textarea>
           <div class="row">
-            <button id="compiled-edit">Open in editor</button>
-            <button id="compiled-dry">Dry run (1 item)</button>
-            <button id="compiled-run" class="primary">Run all</button>
+            <p id="refine-status" class="ask-status"></p>
+            <div class="spacer"></div>
+            <button id="refine" class="btn ai small" type="button">Update</button>
           </div>
         </div>
-      </div>
-      <h2>Recorded steps</h2>
-      <ol id="detail-steps" class="steps"></ol>
-    </section>
+        <div class="result-actions">
+          <button id="compiled-edit" class="btn small" type="button">Open in editor</button>
+          <div class="spacer"></div>
+          <button id="compiled-dry" class="btn small" type="button">Test on 1 item</button>
+          <button id="compiled-run" class="btn small primary" type="button">Run</button>
+        </div>
+      </section>
 
+      <div class="section-head"><h2>What you did</h2><span id="detail-count" class="count"></span></div>
+      <ol id="detail-steps" class="steps"></ol>
+    </main>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
