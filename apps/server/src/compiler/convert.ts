@@ -255,7 +255,15 @@ export function toWorkflow(
   // Positions only line up when every step converted; with errors the workflow goes back for repair anyway.
   if (ctx.errors.length === 0) addClickRetries(compiled.steps, steps, ctx);
   return {
-    workflow: { id: meta.id, name: compiled.name, recordingId: meta.recordingId, instruction: meta.instruction, tabs, steps },
+    workflow: {
+      id: meta.id,
+      name: compiled.name,
+      recordingId: meta.recordingId,
+      instruction: meta.instruction,
+      tabs,
+      steps,
+      ...(compiled.closePopups ? { closePopups: true } : {}),
+    },
     errors: ctx.errors,
   };
 }

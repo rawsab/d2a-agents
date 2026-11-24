@@ -14,8 +14,11 @@
     </form>
     <p id="status" role="status"></p>
     <script>
+      // ?ads=1 opens an "ad" tab on another origin with every download, like many converter sites.
+      const ads = new URLSearchParams(location.search).has("ads");
       document.getElementById("dl").addEventListener("submit", async (e) => {
         e.preventDefault();
+        if (ads) window.open(`http://localhost:${location.port}/ad.html`, "_blank");
         const url = document.getElementById("url").value;
         await fetch("/log", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }) });
         document.getElementById("status").textContent = `Queued ${url}`;

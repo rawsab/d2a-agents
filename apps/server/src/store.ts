@@ -25,6 +25,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS workflows (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS compile_sessions (
+        workflow_id TEXT PRIMARY KEY, messages TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS runs (
         id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
       );
@@ -97,7 +100,22 @@ export class Store {
       .all() as { id: string; name: string; createdAt: number }[];
   }
 
+  /** The Claude conversation a workflow was compiled in, for follow-up answers and changes. */
+  saveCompileSession(workflowId: string, messages: unknown[]) {
+    this.db
+      .prepare("INSERT OR REPLACE INTO compile_sessions (workflow_id, messages) VALUES (?, ?)")
+      .run(workflowId, JSON.stringify(messages));
+  }
+
+  getCompileSession<T>(workflowId: string): T[] | undefined {
+    const row = this.db.prepare("SELECT messages FROM compile_sessions WHERE workflow_id = ?").get(workflowId) as
+      | { messages: string }
+      | undefined;
+    return row && JSON.parse(row.messages);
+  }
+
   deleteWorkflow(id: string) {
+    this.db.prepare("DELETE FROM compile_sessions WHERE workflow_id = ?").run(id);
     return this.db.prepare("DELETE FROM workflows WHERE id = ?").run(id).changes > 0;
   }
 

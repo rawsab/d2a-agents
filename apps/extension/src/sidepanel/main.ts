@@ -116,7 +116,8 @@ async function loadLibrary() {
 type CompileResponse = {
   workflow: Workflow;
   preview: { lists: { name: string; count: number; sample: Record<string, unknown>[] }[]; error?: string } | null;
-  checkedOnLivePage: boolean;
+  /** Undefined when showing a saved workflow rather than a fresh compile. */
+  checkedOnLivePage?: boolean;
   error?: string;
 };
 
@@ -143,7 +144,7 @@ function renderCompiled(res: CompileResponse) {
   list.replaceChildren();
   const note = (cls: string, text: string) => list.append(el("li", cls, text));
   for (const p of notes?.problems ?? []) note("problem", `Problem: ${p}`);
-  for (const q of notes?.questions ?? []) note("question", `Question: ${q}`);
+  if (workflow.closePopups) note("", "Closes tabs that pages open on other sites (ads) while it runs.");
   for (const a of notes?.assumptions ?? []) note("", `Assumed: ${a}`);
   for (const x of notes?.excludedSteps ?? []) note("muted", `Left out ${x.step}: ${x.reason}`);
   for (const l of preview?.lists ?? []) {
@@ -151,9 +152,68 @@ function renderCompiled(res: CompileResponse) {
     const example = first ? Object.entries(first).find(([k, v]) => !k.startsWith("_") && v)?.[1] : undefined;
     note("", `Found ${l.count} ${l.name} on the live page${example ? `, e.g. "${String(example).slice(0, 60)}"` : ""}`);
   }
-  if (!res.checkedOnLivePage) note("muted", "Not checked on the live page (browser busy or disconnected).");
+  if (res.checkedOnLivePage === false) note("muted", "Not checked on the live page (browser busy or disconnected).");
+  renderFollowup(workflow);
   $<HTMLButtonElement>("compiled-dry").onclick = () => startRun(workflow.id, { limit: 1 });
   $<HTMLButtonElement>("compiled-run").onclick = () => startRun(workflow.id, {});
+}
+
+/** Answer boxes for Claude's questions, plus a free-form change request. */
+function renderFollowup(workflow: Workflow) {
+  const questions = workflow.notes?.questions ?? [];
+  const box = $("compiled-questions");
+  box.replaceChildren();
+  const inputs = questions.map((q, i) => {
+    const wrap = el("div", "question");
+    const label = el("label", undefined, q);
+    const input = el("textarea");
+    input.rows = 2;
+    input.id = `answer-${i}`;
+    label.htmlFor = input.id;
+    input.placeholder = "Your answer";
+    wrap.append(label, input);
+    box.append(wrap);
+    return input;
+  });
+  const request = $<HTMLTextAreaElement>("change-request");
+  request.value = "";
+  $("refine-status").textContent = "";
+  $<HTMLButtonElement>("refine").onclick = async () => {
+    const answers = questions.map((question, i) => ({ question, answer: inputs[i].value.trim() })).filter((a) => a.answer);
+    if (!answers.length && !request.value.trim()) return (inputs[0] ?? request).focus();
+    const button = $<HTMLButtonElement>("refine");
+    const status = $("refine-status");
+    button.disabled = true;
+    status.textContent = "Claude is updating the automation…";
+    try {
+      const res = await fetch(`${API}/workflows/${workflow.id}/refine`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answers, request: request.value.trim() }),
+      });
+      const body = (await res.json()) as CompileResponse;
+      if (!res.ok) {
+        status.textContent = `Could not update: ${body.error}`;
+        return;
+      }
+      renderCompiled(body);
+      $("refine-status").textContent = "Updated.";
+      loadWorkflows();
+    } catch (err) {
+      status.textContent = `Could not reach the server: ${(err as Error).message}`;
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
+/** Opens a saved workflow's review, under the recording it was compiled from. */
+async function openWorkflow(id: string) {
+  const workflow = (await (await fetch(`${API}/workflows/${id}`)).json()) as Workflow;
+  if (!workflow.recordingId) return;
+  await openRecording(workflow.recordingId);
+  $<HTMLTextAreaElement>("instruction").value = workflow.instruction ?? "";
+  renderCompiled({ workflow, preview: null });
 }
 
 async function compileRecording(id: string) {
@@ -235,7 +295,10 @@ async function loadWorkflows() {
     dry.onclick = () => startRun(wf.id, { limit: 1 });
     full.onclick = () => startRun(wf.id, {});
     actions.append(dry, full);
-    li.append(el("div", undefined, wf.name), actions);
+    const name = el("div", "name", wf.name);
+    name.title = "Review and update";
+    name.onclick = () => openWorkflow(wf.id);
+    li.append(name, actions);
     list.append(li);
   }
 }

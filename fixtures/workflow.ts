@@ -4,7 +4,7 @@ import type { Workflow } from "@d2a/shared";
  * Hand-written workflow for the fixture site: for every playlist item, copy its share link and
  * submit it to the downloader. Two targets carry deliberately stale CSS so role+name must win.
  */
-export function fixtureWorkflow(origin: string, playlistQuery = ""): Workflow {
+export function fixtureWorkflow(origin: string, playlistQuery = "", downloaderQuery = ""): Workflow {
   const status = { description: "status message", fingerprint: { role: "status", css: "#status" } };
   const copy = { description: "Copy button", fingerprint: { role: "button", name: "Copy", css: "#copy" } };
   return {
@@ -13,7 +13,7 @@ export function fixtureWorkflow(origin: string, playlistQuery = ""): Workflow {
     instruction: "Repeat for every video in the playlist",
     tabs: {
       playlist: { startUrl: `${origin}/list.html${playlistQuery}` },
-      downloader: { startUrl: `${origin}/form.html` },
+      downloader: { startUrl: `${origin}/form.html${downloaderQuery}` },
     },
     steps: [
       { id: "s1", kind: "switchTab", role: "playlist" },

@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
-import Fastify from "fastify";
+import Fastify, { type FastifyBaseLogger, type FastifyReply } from "fastify";
 import { WebSocketServer } from "ws";
 import { Command, SERVER_PORT, Workflow } from "@d2a/shared";
 import { ExtensionBridge } from "./bridge.js";
-import { ClaudeCompilerModel, CompileError, SAMPLE_ITEMS, compile } from "./compiler/index.js";
+import { ClaudeCompilerModel, CompileError, type CompileResult, SAMPLE_ITEMS, compile, refine } from "./compiler/index.js";
 import { RunManager } from "./runs.js";
 import { Store } from "./store.js";
 
@@ -43,23 +43,15 @@ app.get<{ Params: { id: string } }>("/screenshots/:id", async (req, reply) => {
   if (!shot) return reply.code(404).send({ error: "not found" });
   return reply.type(shot.mime).header("cache-control", "max-age=31536000, immutable").send(Buffer.from(shot.data));
 });
-app.post<{ Params: { id: string }; Body: { instruction?: string } }>("/recordings/:id/compile", async (req, reply) => {
-  const recording = store.getRecording(req.params.id);
-  if (!recording) return reply.code(404).send({ error: "not found" });
-  const instruction = req.body?.instruction?.trim();
-  if (!instruction) return reply.code(400).send({ error: "instruction is required" });
-  // Check setup steps against the live page when the browser is free.
-  const canPreview = bridge.connected && !runs.current;
+/** Saves a compile/refine result and shapes the response; maps Claude errors to HTTP errors. */
+async function compileResponse(reply: FastifyReply, canPreview: boolean, log: FastifyBaseLogger, run: () => Promise<CompileResult>) {
   try {
-    const result = await compile(recording, instruction, {
-      model: new ClaudeCompilerModel(),
-      loadScreenshot: (id) => store.getScreenshot(id),
-      preview: canPreview ? (wf) => runs.preview(wf, SAMPLE_ITEMS) : undefined,
-    });
+    const result = await run();
     const { summary, excludedSteps, assumptions, questions } = result.compiled;
     const workflow = { ...result.workflow, notes: { summary, excludedSteps, assumptions, questions, problems: result.problems } };
     store.saveWorkflow(workflow);
-    result.corrections.forEach((problems, i) => req.log.info({ problems }, `compile correction round ${i + 1}`));
+    store.saveCompileSession(workflow.id, result.messages);
+    result.corrections.forEach((problems, i) => log.info({ problems }, `compile correction round ${i + 1}`));
     return {
       workflow,
       preview: result.preview ?? null,
@@ -79,7 +71,44 @@ app.post<{ Params: { id: string }; Body: { instruction?: string } }>("/recording
     if (err instanceof Anthropic.AnthropicError) return reply.code(503).send({ error: err.message });
     throw err;
   }
+}
+
+function compileDeps() {
+  // Check setup steps against the live page when the browser is free.
+  const canPreview = bridge.connected && !runs.current;
+  return {
+    canPreview,
+    deps: {
+      model: new ClaudeCompilerModel(),
+      loadScreenshot: (id: string) => store.getScreenshot(id),
+      preview: canPreview ? (wf: Workflow) => runs.preview(wf, SAMPLE_ITEMS) : undefined,
+    },
+  };
+}
+
+app.post<{ Params: { id: string }; Body: { instruction?: string } }>("/recordings/:id/compile", async (req, reply) => {
+  const recording = store.getRecording(req.params.id);
+  if (!recording) return reply.code(404).send({ error: "not found" });
+  const instruction = req.body?.instruction?.trim();
+  if (!instruction) return reply.code(400).send({ error: "instruction is required" });
+  const { canPreview, deps } = compileDeps();
+  return compileResponse(reply, canPreview, req.log, () => compile(recording, instruction, deps));
 });
+
+app.post<{ Params: { id: string }; Body: { answers?: { question: string; answer: string }[]; request?: string } }>(
+  "/workflows/:id/refine",
+  async (req, reply) => {
+    const workflow = store.getWorkflow(req.params.id);
+    if (!workflow) return reply.code(404).send({ error: "not found" });
+    const history = store.getCompileSession<Anthropic.Beta.BetaMessageParam>(workflow.id);
+    const recording = workflow.recordingId ? store.getRecording(workflow.recordingId) : undefined;
+    if (!history || !recording) return reply.code(409).send({ error: "this workflow wasn't compiled from a recording" });
+    const answers = (req.body?.answers ?? []).filter((a) => a.answer?.trim());
+    const request = req.body?.request?.trim() || undefined;
+    const { canPreview, deps } = compileDeps();
+    return compileResponse(reply, canPreview, req.log, () => refine(recording, workflow, history, { answers, request }, deps));
+  },
+);
 
 app.get("/workflows", async () => store.listWorkflows());
 app.post("/workflows", async (req, reply) => {

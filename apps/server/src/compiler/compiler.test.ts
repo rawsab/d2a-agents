@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { type RawEvent, type RecordedEvent, type Recording, mergeEvents } from "@d2a/shared";
-import { type CompilerModel, type ModelReply, type PreviewResult, compile } from "./index.js";
+import { type CompilerModel, type ModelReply, type PreviewResult, compile, refine } from "./index.js";
 import { toWorkflow } from "./convert.js";
 import { buildContext } from "./prompt.js";
 import type { CompiledWorkflow, InnerStep, TargetRef, TopStep } from "./schema.js";
@@ -62,6 +62,7 @@ function goodAnswer(): CompiledWorkflow {
     name: "Playlist → downloader",
     summary: "Copies each video's share link and submits it to the downloader.",
     tabs: [{ role: "playlist", startUrl: LIST }, { role: "downloader", startUrl: FORM }],
+    closePopups: false,
     steps: [
       top({ id: "w1", kind: "switchTab", tab: "playlist" }),
       top({
@@ -221,6 +222,30 @@ describe("compile", () => {
     expect(result.rounds).toBe(2);
     expect(model.calls[1][2].content).toContain("the answer did not match the schema");
     expect(model.calls[1][2].content).toContain("summary");
+  });
+
+  it("continues the saved conversation with the user's answers, appending only", async () => {
+    const first = goodAnswer();
+    first.questions = ["Should ad tabs be closed?"];
+    const second = { ...goodAnswer(), closePopups: true };
+    const model = new FakeModel([first, second]);
+    const compiled = await compile(recording, "repeat", { model, loadScreenshot });
+    expect(compiled.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+
+    const refined = await refine(
+      recording,
+      compiled.workflow,
+      compiled.messages,
+      { answers: [{ question: "Should ad tabs be closed?", answer: "Yes, close them" }], request: "Also skip Video Two" },
+      { model, loadScreenshot },
+    );
+    const sent = model.calls[1];
+    expect(sent.slice(0, 2)).toEqual(compiled.messages); // history unchanged, thinking block included
+    expect(sent[2].content).toBe(
+      "The user answered your questions:\nQ: Should ad tabs be closed?\nA: Yes, close them\n\nThe user asks for these changes:\nAlso skip Video Two\n\nReturn the complete updated automation.",
+    );
+    expect(refined.workflow).toMatchObject({ id: compiled.workflow.id, closePopups: true, instruction: "repeat" });
+    expect(refined.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
   it("gives up after two correction rounds and returns the remaining problems", async () => {

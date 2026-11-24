@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { type ListItem, type Recording, type Workflow, mergeEvents } from "@d2a/shared";
 import { toWorkflow } from "./convert.js";
-import { SYSTEM_PROMPT, type ScreenshotLoader, buildContext, repairMessage } from "./prompt.js";
+import { SYSTEM_PROMPT, type ScreenshotLoader, buildContext, feedbackMessage, repairMessage } from "./prompt.js";
 import * as z from "zod/v4";
 import { CompiledWorkflow } from "./schema.js";
 
@@ -77,6 +77,16 @@ export type CompileResult = {
   rounds: number;
   /** Problems sent back to Claude in each correction round, oldest first. */
   corrections: string[][];
+  /** The whole conversation, ending with Claude's final answer; saved so the user can follow up. */
+  messages: Anthropic.Beta.BetaMessageParam[];
+};
+
+type Deps = {
+  model: CompilerModel;
+  loadScreenshot: ScreenshotLoader;
+  /** Runs the workflow's setup on the live page; omitted when the browser isn't available. */
+  preview?: (workflow: Workflow) => Promise<PreviewResult>;
+  id?: string;
 };
 
 /** Problems the live-page check found: setup failing, or lists that came back empty. */
@@ -99,24 +109,42 @@ export function previewProblems(workflow: Workflow, preview: PreviewResult): str
   return problems;
 }
 
-export async function compile(
-  recording: Recording,
-  instruction: string,
-  deps: {
-    model: CompilerModel;
-    loadScreenshot: ScreenshotLoader;
-    /** Runs the workflow's setup on the live page; omitted when the browser isn't available. */
-    preview?: (workflow: Workflow) => Promise<PreviewResult>;
-    id?: string;
-  },
-): Promise<CompileResult> {
+export async function compile(recording: Recording, instruction: string, deps: Deps): Promise<CompileResult> {
   const steps = mergeEvents(recording.events, recording.overrides);
   if (steps.length === 0) throw new CompileError("the recording has no steps");
   const meta = { id: deps.id ?? randomUUID(), recordingId: recording.id, instruction };
   const messages: Anthropic.Beta.BetaMessageParam[] = [
     { role: "user", content: buildContext(instruction, steps, recording.events, deps.loadScreenshot) },
   ];
+  return converge(messages, recording, meta, deps);
+}
 
+/**
+ * Continues a saved compile conversation with the user's answers and/or requested changes.
+ * Append-only: earlier turns are sent back unchanged so Claude's thinking stays valid.
+ */
+export async function refine(
+  recording: Recording,
+  workflow: Workflow,
+  history: Anthropic.Beta.BetaMessageParam[],
+  feedback: { answers: { question: string; answer: string }[]; request?: string },
+  deps: Deps,
+): Promise<CompileResult> {
+  if (!feedback.answers.length && !feedback.request) throw new CompileError("nothing to change: give an answer or a request");
+  const messages = [...history, { role: "user" as const, content: feedbackMessage(feedback.answers, feedback.request) }];
+  const meta = { id: workflow.id, recordingId: recording.id, instruction: workflow.instruction ?? "" };
+  return converge(messages, recording, meta, deps);
+}
+
+/** Asks Claude, validates and checks the answer, and sends problems back until it's usable. */
+async function converge(
+  messages: Anthropic.Beta.BetaMessageParam[],
+  recording: Recording,
+  meta: { id: string; recordingId: string; instruction: string },
+  deps: Deps,
+): Promise<CompileResult> {
+  // Merged the same way as when the conversation started, so step ids still match.
+  const steps = mergeEvents(recording.events, recording.overrides);
   const corrections: string[][] = [];
   for (let round = 1; ; round++) {
     const reply = await deps.model.send(messages);
@@ -133,9 +161,12 @@ export async function compile(
         preview = await deps.preview(workflow);
         problems = previewProblems(workflow, preview);
       }
-      result = { workflow, compiled: parsed.answer, preview, problems, rounds: round, corrections };
+      result = { workflow, compiled: parsed.answer, preview, problems, rounds: round, corrections, messages };
     }
-    if (result && (problems.length === 0 || round > MAX_REPAIRS)) return result;
+    if (result && (problems.length === 0 || round > MAX_REPAIRS)) {
+      messages.push({ role: "assistant", content: reply.content });
+      return result;
+    }
     if (round > MAX_REPAIRS) throw new CompileError(`Claude's answer could not be read: ${problems.join("; ")}`);
     corrections.push(problems);
     messages.push({ role: "assistant", content: reply.content }, { role: "user", content: repairMessage(problems) });

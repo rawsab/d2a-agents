@@ -86,6 +86,10 @@ export const CompiledWorkflow = z.object({
   name: z.string().describe("Short name for the automation"),
   summary: z.string().describe("Two or three sentences, for the user, on what the automation will do"),
   tabs: z.array(z.object({ role: z.string(), startUrl: z.string() })),
+  closePopups: z
+    .boolean()
+    .default(false)
+    .describe("Close tabs that pages open on sites other than the tabs' own (ads, pop-unders) as soon as they appear"),
   steps: z.array(TopStep),
   excludedSteps: z
     .array(z.object({ step: z.string(), reason: z.string() }))

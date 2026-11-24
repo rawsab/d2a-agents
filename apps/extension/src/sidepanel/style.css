@@ -66,3 +66,10 @@ textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-
 .notes .problem { color: var(--danger); }
 .notes .question { color: #b7791f; }
 .notes .muted { color: var(--muted); }
+
+.followup { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.followup > button { align-self: flex-start; }
+.question { display: flex; flex-direction: column; gap: 4px; }
+.question label { color: #b7791f; font-size: 12px; }
+.recordings .name { cursor: pointer; }
+.recordings .name:hover { text-decoration: underline; }

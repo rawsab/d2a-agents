@@ -6,12 +6,16 @@ type Env = Awaited<ReturnType<typeof launch>>;
  * Records the share → copy → paste → download demonstration on the fixture site (video 2),
  * optionally with an accidental click first. Returns the recording id.
  */
-export async function recordFixtureDemo(env: Env, origin: string, opts: { withNoise?: boolean } = {}): Promise<string> {
+export async function recordFixtureDemo(
+  env: Env,
+  origin: string,
+  opts: { withNoise?: boolean; withAds?: boolean } = {},
+): Promise<string> {
   const { context, panel } = env;
   const list = await context.newPage();
   await list.goto(`${origin}/list.html`);
   const form = await context.newPage();
-  await form.goto(`${origin}/form.html`);
+  await form.goto(`${origin}/form.html${opts.withAds ? "?ads=1" : ""}`);
 
   await list.bringToFront();
   const rec = await panel.evaluate(() => chrome.runtime.sendMessage({ type: "startRecording", name: "fixture demo" }));
@@ -26,7 +30,15 @@ export async function recordFixtureDemo(env: Env, origin: string, opts: { withNo
   await form.bringToFront();
   await form.getByLabel("Paste link").click();
   await form.keyboard.press("ControlOrMeta+V");
+  const ad = opts.withAds ? context.waitForEvent("page") : undefined;
   await form.getByRole("button", { name: "Download" }).click();
+  if (ad) {
+    // The user glances at the ad tab, closes it and goes back.
+    const page = await ad;
+    await page.waitForLoadState();
+    await page.close();
+    await form.bringToFront();
+  }
   await form.getByRole("status").getByText("Queued").waitFor();
   await form.waitForTimeout(1000);
   await panel.evaluate(() => chrome.runtime.sendMessage({ type: "stopRecording" }));

@@ -18,6 +18,8 @@ The runner executes these step kinds (omit fields a kind doesn't use):
 - forEach {list, as, body} (top level only): run body for each list item. Targets with withinItem are looked up inside the current item.
 - assert {condition, target?}: fail the item if target isn't found.
 
+Workflow option closePopups: while it runs, tabs that pages open on sites other than the workflow's tab roles (ads, pop-unders) are closed immediately and the runner returns to the tab that opened them. Set it when the user asks for ads or popups to be closed, or when the recording shows pages opening unrelated tabs.
+
 Values and URLs may use templates: {{name}} for a variable, {{item.field}} for a loop item's field (also _index).
 
 Targets: point at recorded elements instead of inventing selectors. fromStep alone means "the element that recorded step acted on"; fromStep with inventoryIndex picks an element from that step's page inventory (what was on the page at that moment). role/name/css refine or replace a recorded fingerprint; drop parts that tie it to one item (an nth-of-type position, a specific href) when the element should be found per item. Elements are matched by votes from role+name, CSS and other recorded attributes, so a good role and name usually suffice.
@@ -132,6 +134,17 @@ export function buildContext(
   if (inventories.length) text(`Interactive elements on each page when the user acted there:\n${inventories.join("\n")}`);
   text("Produce the automation.");
   return blocks;
+}
+
+/** A follow-up turn: the user's answers to the questions, and/or changes they want. */
+export function feedbackMessage(answers: { question: string; answer: string }[], request: string | undefined): string {
+  const parts: string[] = [];
+  if (answers.length) {
+    parts.push(`The user answered your questions:\n${answers.map((a) => `Q: ${a.question}\nA: ${a.answer}`).join("\n\n")}`);
+  }
+  if (request) parts.push(`The user asks for these changes:\n${request}`);
+  parts.push("Return the complete updated automation.");
+  return parts.join("\n\n");
 }
 
 export function repairMessage(problems: string[]): string {

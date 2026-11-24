@@ -4,7 +4,12 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
 const SITE = join(import.meta.dirname, "site");
-const PAGES: Record<string, string> = { "/list.html": "list.html", "/watch": "list.html", "/form.html": "form.html" };
+const PAGES: Record<string, string> = {
+  "/list.html": "list.html",
+  "/watch": "list.html",
+  "/form.html": "form.html",
+  "/ad.html": "ad.html",
+};
 
 /** Static fixture site plus a /log endpoint recording every "download" request. */
 export async function startFixtureServer(port = 0) {

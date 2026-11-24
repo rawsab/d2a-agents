@@ -41,6 +41,14 @@ test("actions wait for their element when the page renders it after loading", as
   expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
 });
 
+test("closePopups closes the ad tabs a page opens and the run carries on", async () => {
+  const run = await runWorkflow({ ...fixtureWorkflow(fixture.origin, "", "?ads=1"), closePopups: true }, { delayMs: 0 });
+  expect(run.status).toBe("done");
+  expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
+  expect(run.log.filter((l) => l.message.startsWith("closed a tab the page opened (localhost"))).toHaveLength(4);
+  expect(env.context.pages().some((p) => p.url().includes("/ad.html"))).toBe(false);
+});
+
 test("a dry run only does the first item", async () => {
   const run = await runWorkflow(fixtureWorkflow(fixture.origin), { limit: 1 });
   expect(run.status).toBe("done");
