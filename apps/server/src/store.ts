@@ -16,6 +16,12 @@ export class Store {
         data TEXT NOT NULL,
         PRIMARY KEY (recording_id, seq)
       );
+      CREATE TABLE IF NOT EXISTS screenshots (
+        id TEXT PRIMARY KEY,
+        recording_id TEXT NOT NULL REFERENCES recordings(id),
+        mime TEXT NOT NULL,
+        data BLOB NOT NULL
+      );
     `);
   }
 
@@ -34,10 +40,35 @@ export class Store {
       .run(recordingId, recordingId, JSON.stringify(event));
   }
 
+  /** Stores a `data:` URL screenshot as a blob. */
+  saveScreenshot(id: string, recordingId: string, dataUrl: string) {
+    const match = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
+    if (!match) throw new Error("screenshot is not a base64 data URL");
+    this.db
+      .prepare("INSERT OR REPLACE INTO screenshots (id, recording_id, mime, data) VALUES (?, ?, ?, ?)")
+      .run(id, recordingId, match[1], Buffer.from(match[2], "base64"));
+  }
+
+  getScreenshot(id: string) {
+    return this.db.prepare("SELECT mime, data FROM screenshots WHERE id = ?").get(id) as
+      | { mime: string; data: Uint8Array }
+      | undefined;
+  }
+
   listRecordings() {
     return this.db
-      .prepare("SELECT id, name, created_at AS createdAt FROM recordings ORDER BY created_at DESC")
-      .all() as { id: string; name: string; createdAt: number }[];
+      .prepare(
+        `SELECT r.id, r.name, r.created_at AS createdAt,
+                (SELECT COUNT(*) FROM recorded_events e WHERE e.recording_id = r.id) AS eventCount
+         FROM recordings r ORDER BY r.created_at DESC`,
+      )
+      .all() as { id: string; name: string; createdAt: number; eventCount: number }[];
+  }
+
+  deleteRecording(id: string) {
+    this.db.prepare("DELETE FROM screenshots WHERE recording_id = ?").run(id);
+    this.db.prepare("DELETE FROM recorded_events WHERE recording_id = ?").run(id);
+    return this.db.prepare("DELETE FROM recordings WHERE id = ?").run(id).changes > 0;
   }
 
   getRecording(id: string): Recording | undefined {

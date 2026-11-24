@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixture Downloader</title>
+    <style>body { font: 14px system-ui, sans-serif; margin: 24px; }</style>
+  </head>
+  <body>
+    <h1>Fixture Downloader</h1>
+    <form id="dl">
+      <label for="url">Paste link</label>
+      <input id="url" name="url" size="40" />
+      <button type="submit">Download</button>
+    </form>
+    <p id="status" role="status"></p>
+    <script>
+      document.getElementById("dl").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const url = document.getElementById("url").value;
+        await fetch("/log", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }) });
+        document.getElementById("status").textContent = `Queued ${url}`;
+        document.getElementById("url").value = "";
+      });
+    </script>
+  </body>
+</html>

@@ -5,7 +5,7 @@ export default defineManifest({
   name: "D2A Recorder",
   version: "0.0.1",
   description: "Demonstrate a browser task once; let an agent repeat it.",
-  permissions: ["tabs", "scripting", "storage", "sidePanel", "debugger", "clipboardRead"],
+  permissions: ["tabs", "scripting", "storage", "sidePanel", "debugger", "clipboardRead", "webNavigation"],
   host_permissions: ["<all_urls>"],
   background: { service_worker: "src/background/index.ts", type: "module" },
   side_panel: { default_path: "src/sidepanel/index.html" },

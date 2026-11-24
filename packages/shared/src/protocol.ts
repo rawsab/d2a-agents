@@ -23,6 +23,7 @@ export const ExtensionToServer = z.discriminatedUnion("type", [
   z.object({ type: z.literal("recordingStarted"), recordingId: z.string(), name: z.string() }),
   z.object({ type: z.literal("recordedEvent"), recordingId: z.string(), data: RecordedEvent }),
   z.object({ type: z.literal("recordingStopped"), recordingId: z.string() }),
+  z.object({ type: z.literal("screenshot"), recordingId: z.string(), id: z.string(), dataUrl: z.string() }),
   z.object({ type: z.literal("commandResult"), requestId: z.string(), ok: z.boolean(), result: z.unknown().optional(), error: z.string().optional() }),
 ]);
 export type ExtensionToServer = z.infer<typeof ExtensionToServer>;

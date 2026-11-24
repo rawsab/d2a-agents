@@ -14,6 +14,14 @@ app.get<{ Params: { id: string } }>("/recordings/:id", async (req, reply) => {
   const rec = store.getRecording(req.params.id);
   return rec ?? reply.code(404).send({ error: "not found" });
 });
+app.delete<{ Params: { id: string } }>("/recordings/:id", async (req, reply) =>
+  store.deleteRecording(req.params.id) ? { ok: true } : reply.code(404).send({ error: "not found" }),
+);
+app.get<{ Params: { id: string } }>("/screenshots/:id", async (req, reply) => {
+  const shot = store.getScreenshot(req.params.id);
+  if (!shot) return reply.code(404).send({ error: "not found" });
+  return reply.type(shot.mime).header("cache-control", "max-age=31536000, immutable").send(Buffer.from(shot.data));
+});
 // Debug hook: run one low-level command against the browser.
 app.post("/debug/command", async (req) => bridge.execute(Command.parse(req.body)));
 

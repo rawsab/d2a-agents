@@ -6,12 +6,21 @@
     "dev:server": "pnpm --filter @d2a/server dev",
     "dev:extension": "pnpm --filter @d2a/extension dev",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "vitest run"
+    "typecheck": "pnpm -r typecheck && tsc -p .",
+    "test": "vitest run --dir packages",
+    "test:e2e": "pnpm --filter @d2a/extension build && playwright test",
+    "fixtures": "tsx fixtures/server.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
   },
-  "packageManager": "pnpm@11.9.0"
+  "packageManager": "pnpm@11.9.0",
+  "dependencies": {
+    "@d2a/shared": "workspace:*"
+  }
 }

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixture Playlist</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 24px; }
+      .item { display: flex; gap: 12px; align-items: center; padding: 6px 0; }
+      dialog { border: 1px solid #ccc; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Playlist: Fixture Mix</h1>
+    <ul id="playlist">
+      <li class="item"><a class="title" href="/watch?v=vid1">Video One</a><button class="share">Share</button></li>
+      <li class="item"><a class="title" href="/watch?v=vid2">Video Two</a><button class="share">Share</button></li>
+      <li class="item"><a class="title" href="/watch?v=vid3">Video Three</a><button class="share">Share</button></li>
+      <li class="item"><a class="title" href="/watch?v=vid4">Video Four</a><button class="share">Share</button></li>
+    </ul>
+
+    <dialog id="share-dialog">
+      <p>Share this video</p>
+      <input id="share-url" readonly size="40" />
+      <button id="copy">Copy</button>
+      <button id="close">Close</button>
+    </dialog>
+
+    <script>
+      const dialog = document.getElementById("share-dialog");
+      const shareUrl = document.getElementById("share-url");
+      for (const btn of document.querySelectorAll(".share")) {
+        btn.addEventListener("click", () => {
+          // Like youtu.be links, the share URL differs from the item's href.
+          const id = new URL(btn.previousElementSibling.href).searchParams.get("v");
+          shareUrl.value = `${location.origin}/share/${id}`;
+          dialog.showModal();
+        });
+      }
+      document.getElementById("copy").addEventListener("click", async () => {
+        await navigator.clipboard.writeText(shareUrl.value);
+        dialog.close();
+      });
+      document.getElementById("close").addEventListener("click", () => dialog.close());
+    </script>
+  </body>
+</html>

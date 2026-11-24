@@ -10,6 +10,8 @@ export const Fingerprint = z.object({
   nameAttr: z.string().optional(),
   css: z.string().optional(),
   xpath: z.string().optional(),
+  /** Absolute URL for links; lets the compiler read data straight from the DOM. */
+  href: z.string().optional(),
   bbox: z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() }).optional(),
   /** Trimmed outerHTML of the element and its parent ("inspect element" context). */
   html: z.string().optional(),
@@ -36,7 +38,12 @@ export const RawEvent = z.discriminatedUnion("type", [
   z.object({ ...base, type: z.literal("submit"), target: Fingerprint }),
   z.object({ ...base, type: z.literal("copy"), target: Fingerprint.optional(), value: z.string() }),
   z.object({ ...base, type: z.literal("paste"), target: Fingerprint, value: z.string() }),
-  z.object({ ...base, type: z.literal("navigate"), fromUrl: z.string().optional() }),
+  z.object({
+    ...base,
+    type: z.literal("navigate"),
+    transitionType: z.string().optional(),
+    transitionQualifiers: z.array(z.string()).optional(),
+  }),
   z.object({ ...base, type: z.literal("tabCreated"), openerTabId: z.number().optional() }),
   z.object({ ...base, type: z.literal("tabActivated") }),
 ]);

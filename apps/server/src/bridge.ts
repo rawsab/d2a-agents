@@ -62,6 +62,9 @@ export class ExtensionBridge {
       case "recordedEvent":
         this.store.appendEvent(msg.recordingId, msg.data);
         return;
+      case "screenshot":
+        this.store.saveScreenshot(msg.id, msg.recordingId, msg.dataUrl);
+        return;
       case "ping":
       case "recordingStopped":
         return;
