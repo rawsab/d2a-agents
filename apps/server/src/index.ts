@@ -35,4 +35,4 @@ app.server.on("upgrade", (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => bridge.attach(ws));
 });
 
-await app.listen({ host: "127.0.0.1", port: SERVER_PORT });
+await app.listen({ host: "127.0.0.1", port: Number(process.env.D2A_PORT) || SERVER_PORT });

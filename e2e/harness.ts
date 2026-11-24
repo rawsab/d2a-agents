@@ -3,11 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BrowserContext, chromium, type Worker } from "@playwright/test";
-import { SERVER_PORT } from "@d2a/shared";
 
 const ROOT = join(import.meta.dirname, "..");
-const EXTENSION = join(ROOT, "apps/extension/dist");
-export const API = `http://127.0.0.1:${SERVER_PORT}`;
+/** Separate port and build so tests never touch a running dev server's data. */
+export const E2E_PORT = 7831;
+const EXTENSION = join(ROOT, "apps/extension/dist-e2e");
+export const API = `http://127.0.0.1:${E2E_PORT}`;
 
 export async function health(): Promise<{ ok: boolean; extensionConnected: boolean } | undefined> {
   try {
@@ -30,13 +31,14 @@ async function until<T>(fn: () => Promise<T | undefined | false>, what: string, 
 /** Starts an isolated server (temp DB) and Chromium with the unpacked extension loaded. */
 export async function launch() {
   if (await health()) {
-    throw new Error(`port ${SERVER_PORT} is in use (is \`pnpm dev:server\` running?). Stop it before running e2e tests.`);
+    throw new Error(`e2e port ${E2E_PORT} is in use; is another test run still going?`);
   }
   const tmp = await mkdtemp(join(tmpdir(), "d2a-e2e-"));
   const server: ChildProcess = spawn("npx", ["tsx", "apps/server/src/index.ts"], {
     cwd: ROOT,
-    env: { ...process.env, D2A_DB: join(tmp, "test.db") },
+    env: { ...process.env, D2A_DB: join(tmp, "test.db"), D2A_PORT: String(E2E_PORT) },
     stdio: "ignore",
+    detached: true, // own process group, so close() also stops the server npx spawned
   });
   await until(health, "server");
 
@@ -63,7 +65,10 @@ export async function launch() {
     extensionId,
     async close() {
       await context.close();
-      server.kill();
+      const exited = new Promise((r) => server.once("exit", r));
+      process.kill(-server.pid!, "SIGTERM");
+      await exited;
+      await until(async () => !(await health()), "server to stop");
       await rm(tmp, { recursive: true, force: true });
     },
   };

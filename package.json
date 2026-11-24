@@ -8,7 +8,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck && tsc -p .",
     "test": "vitest run --dir packages",
-    "test:e2e": "pnpm --filter @d2a/extension build && playwright test",
+    "test:e2e": "D2A_PORT=7831 D2A_OUT_DIR=dist-e2e pnpm --filter @d2a/extension build && playwright test",
     "fixtures": "tsx fixtures/server.ts"
   },
   "devDependencies": {

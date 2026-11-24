@@ -31,8 +31,13 @@ function selectedText(): string {
   return window.getSelection()?.toString() ?? "";
 }
 
-/** Installs capture listeners; events are emitted only while isRecording() is true. */
-export function installRecorder(isRecording: () => boolean, emit: Emit) {
+/**
+ * Installs capture listeners; events are emitted only while isRecording() is true.
+ * Returns a function that removes them.
+ */
+export function installRecorder(isRecording: () => boolean, emit: Emit): () => void {
+  const abort = new AbortController();
+  const { signal } = abort;
   let pending: { el: Element; target: Fingerprint; value: string; masked: boolean } | undefined;
   let lastCopy: { value: string; ts: number } | undefined;
   const page = () => ({ url: location.href, title: document.title, ts: Date.now() });
@@ -52,7 +57,7 @@ export function installRecorder(isRecording: () => boolean, emit: Emit) {
     emit({ ...page(), type: "copy", value, target });
   };
 
-  const opts = { capture: true, passive: true };
+  const opts = { capture: true, passive: true, signal };
 
   addEventListener("click", (e) => {
     if (!isRecording() || !e.isTrusted || !(e.target instanceof Element)) return;
@@ -111,14 +116,15 @@ export function installRecorder(isRecording: () => boolean, emit: Emit) {
     const value = e.clipboardData?.getData("text/plain") || selectedText();
     const target = e.target instanceof Element ? fingerprint(interactiveAncestor(e.target)) : undefined;
     emitCopy(value, target);
-  }, { passive: true });
+  }, { passive: true, signal });
 
   // Clipboard writes from page JS, forwarded by mainworld.js.
   addEventListener("__d2a_clipboard", (e) => {
     if (!isRecording()) return;
     const value = (e as CustomEvent).detail;
     if (typeof value === "string") emitCopy(value);
-  });
+  }, { signal });
 
   addEventListener("pagehide", flush, opts);
+  return () => abort.abort();
 }

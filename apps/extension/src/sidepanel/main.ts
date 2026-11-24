@@ -1,6 +1,5 @@
-import { type RecordedEvent, type Recording, type SemanticStep, SERVER_PORT, describeStep, mergeEvents } from "@d2a/shared";
-
-const API = `http://127.0.0.1:${SERVER_PORT}`;
+import { type RecordedEvent, type Recording, type SemanticStep, describeStep, mergeEvents } from "@d2a/shared";
+import { API_URL as API } from "../config.js";
 type RecordingState = { id: string; name: string } | null;
 type Status = { connected: boolean; recording: RecordingState };
 
