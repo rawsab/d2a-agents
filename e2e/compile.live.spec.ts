@@ -16,11 +16,16 @@ test("Claude compiles the recorded demonstration into a loop over the playlist, 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ instruction: "Repeat this for every video in the playlist" }),
     });
-    const body = (await res.json()) as { workflow: Workflow; rounds: number; error?: string };
+    const body = (await res.json()) as { workflow: Workflow; rounds: number; corrections: string[][]; error?: string };
     expect(res.ok, body.error).toBe(true);
+    console.log(`corrections: ${JSON.stringify(body.corrections)}`);
     console.log(`compiled in ${body.rounds} round(s):\n${JSON.stringify(body.workflow, null, 2)}`);
     expect(body.workflow.notes?.problems).toEqual([]);
-    expect(body.workflow.steps.some((s) => s.kind === "forEach")).toBe(true);
+    const loop = body.workflow.steps.find((s) => s.kind === "forEach");
+    expect(loop).toBeDefined();
+    // The Share click opened a dialog in the recording, so it gets a retry condition.
+    const share = loop?.kind === "forEach" ? loop.body.find((s) => s.kind === "click" && s.target.fingerprint.name === "Share") : undefined;
+    expect(share).toMatchObject({ until: { target: { fingerprint: { name: "Copy" } } } });
 
     fixture.log.length = 0; // the demonstration itself submitted one link
     const run = await runWorkflow(body.workflow, { delayMs: 0 }, undefined, 120_000);

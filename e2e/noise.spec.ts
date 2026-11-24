@@ -54,6 +54,7 @@ test("flags accidental clicks and dismissed dialogs in a real recording, and hon
     ]);
     expect(steps[4].effect?.opened).toEqual(['dialog "Share this video"']);
     expect(steps[8].effect?.requests).toBeGreaterThan(0); // the Download fetch was observed
+    expect(steps[8].effect?.appeared).toContain(`Queued ${fixture.origin}/share/vid2`);
 
     // The user disagrees about the heading click; the decision is stored and applied.
     const put = await fetch(`${API}/recordings/${rec.id}/overrides/${steps[1].events[0]}`, {

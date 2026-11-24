@@ -3,6 +3,10 @@ import { clean, roleOf } from "./fingerprint.js";
 
 export const EFFECT_WINDOW_MS = 750;
 const HISTORY_MS = 5_000;
+const MAX_TEXT_HISTORY = 200;
+const MAX_APPEARED = 5;
+const MAX_SNIPPET = 100;
+const SKIP_TEXT_PARENTS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
 const OVERLAY_SELECTORS = [
   "dialog[open]",
   "[role=dialog]",
@@ -17,11 +21,36 @@ const OVERLAY_SELECTORS = [
 export class PageActivity {
   private mutations: [number, number][] = [];
   private requests: number[] = [];
-  private mo = new MutationObserver((records) => this.mutations.push([performance.now(), records.length]));
+  /** Text added to the page, so effects can say what appeared (e.g. "Queued …"). */
+  private texts: [number, string][] = [];
+  private mo = new MutationObserver((records) => {
+    const now = performance.now();
+    this.mutations.push([now, records.length]);
+    for (const r of records) {
+      if (r.type === "characterData") this.addText(now, r.target);
+      else for (const node of r.addedNodes) this.addText(now, node);
+    }
+    if (this.texts.length > MAX_TEXT_HISTORY) this.texts.splice(0, this.texts.length - MAX_TEXT_HISTORY);
+  });
   private po = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) this.requests.push(entry.startTime);
   });
   private active = false;
+
+  private addText(t: number, node: Node) {
+    const parent = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
+    if (!parent || SKIP_TEXT_PARENTS.has(parent.tagName)) return;
+    // textContent, not innerText: this runs on every mutation batch and must not force layout.
+    const text = node.textContent?.replace(/\s+/g, " ").trim();
+    if (text) this.texts.push([t, text.length > MAX_SNIPPET ? `${text.slice(0, MAX_SNIPPET - 1)}…` : text]);
+  }
+
+  /** Distinct text snippets added in [from, to). */
+  appeared(from: number, to: number): string[] {
+    const out = new Set<string>();
+    for (const [t, text] of this.texts) if (t >= from && t < to) out.add(text);
+    return [...out].slice(0, MAX_APPEARED);
+  }
 
   setActive(active: boolean) {
     if (active === this.active) return;
@@ -38,6 +67,7 @@ export class PageActivity {
       this.po.disconnect();
       this.mutations = [];
       this.requests = [];
+      this.texts = [];
     }
   }
 
@@ -122,6 +152,7 @@ export class EffectProbes {
         opened: [...overlays].filter(([el]) => !overlays0.has(el)).map(([, d]) => d),
         closed: [...overlays0].filter(([el]) => !overlays.has(el)).map(([, d]) => d),
         copied: this.lastCopyAt() >= started,
+        appeared: this.activity.appeared(t0, t0 + window),
         unloaded,
       });
     };

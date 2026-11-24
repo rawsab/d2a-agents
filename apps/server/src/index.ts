@@ -59,7 +59,14 @@ app.post<{ Params: { id: string }; Body: { instruction?: string } }>("/recording
     const { summary, excludedSteps, assumptions, questions } = result.compiled;
     const workflow = { ...result.workflow, notes: { summary, excludedSteps, assumptions, questions, problems: result.problems } };
     store.saveWorkflow(workflow);
-    return { workflow, preview: result.preview ?? null, rounds: result.rounds, checkedOnLivePage: canPreview };
+    result.corrections.forEach((problems, i) => req.log.info({ problems }, `compile correction round ${i + 1}`));
+    return {
+      workflow,
+      preview: result.preview ?? null,
+      rounds: result.rounds,
+      corrections: result.corrections,
+      checkedOnLivePage: canPreview,
+    };
   } catch (err) {
     if (err instanceof CompileError) return reply.code(422).send({ error: err.message });
     // With no credentials at all the SDK throws a plain Error (no typed class) when the request is made.

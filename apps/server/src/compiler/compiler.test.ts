@@ -35,6 +35,7 @@ const recording: Recording = {
     ev({ type: "paste", tabId: 2, url: FORM, ts: 3100, target: field, value: "http://127.0.0.1:7822/share/vid2" }),
     ev({ type: "input", tabId: 2, url: FORM, ts: 3200, target: field, value: "http://127.0.0.1:7822/share/vid2", masked: false }),
     ev({ id: "c", type: "click", tabId: 2, url: FORM, ts: 4000, target: download }),
+    ev({ type: "effect", tabId: 2, url: FORM, ts: 4750, actionId: "c", effect: { ...quiet(), mutations: 1, requests: 1, appeared: ["Queued http://127.0.0.1:7822/share/vid2"] } }),
   ],
 };
 
@@ -114,6 +115,19 @@ describe("toWorkflow", () => {
     expect(workflow.tabs).toEqual({ playlist: { startUrl: LIST }, downloader: { startUrl: FORM } });
   });
 
+  it("adds a retry condition to clicks that opened something, waiting for the next step's element", () => {
+    const answer = goodAnswer();
+    delete (answer.steps[2].body![1] as Partial<InnerStep>).until;
+    const { workflow, errors } = toWorkflow(answer, { steps, recorded: recording.events }, meta);
+    expect(errors).toEqual([]);
+    const loop = workflow.steps[2];
+    if (loop.kind !== "forEach") throw new Error("expected forEach");
+    const [, share, copy] = loop.body;
+    // s3 (Share) opened a dialog in the recording; Copy is the next element acted on.
+    expect(share).toMatchObject({ kind: "click", until: { target: { description: "Copy button" } } });
+    expect(copy).not.toHaveProperty("until"); // the Copy click opened nothing
+  });
+
   it("picks elements from a step's page inventory", () => {
     const answer = goodAnswer();
     answer.steps.splice(2, 1, top({ id: "w3", kind: "click", target: ref({ description: "Video 4", fromStep: "s3", inventoryIndex: 3 }) }));
@@ -151,6 +165,7 @@ describe("buildContext", () => {
     expect(text).toContain("likely noise (85%)");
     expect(text).toContain('effect: opened dialog "Share this video"');
     expect(text).toContain('copied: "http://127.0.0.1:7822/share/vid2"');
+    expect(text).toContain('showed "Queued http://127.0.0.1:7822/share/vid2"');
     expect(text).toContain('3: link "Video 4" href=http://127.0.0.1:7822/watch?v=vid4 css=#playlist > li:nth-of-type(4) > a');
     expect(blocks.filter((b) => b.type === "image")).toHaveLength(1);
   });
@@ -159,11 +174,12 @@ describe("buildContext", () => {
 /** Replays scripted answers and records what it was sent. */
 class FakeModel implements CompilerModel {
   calls: Anthropic.Beta.BetaMessageParam[][] = [];
-  constructor(private answers: CompiledWorkflow[]) {}
+  constructor(private answers: (CompiledWorkflow | string)[]) {}
   async send(messages: Anthropic.Beta.BetaMessageParam[]): Promise<ModelReply> {
     this.calls.push(structuredClone(messages));
     const parsed = this.answers[this.calls.length - 1];
-    return { parsed, content: [{ type: "thinking", thinking: "", signature: `sig${this.calls.length}` }, { type: "text", text: JSON.stringify(parsed) }] };
+    const text = typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+    return { text, content: [{ type: "thinking", thinking: "", signature: `sig${this.calls.length}` }, { type: "text", text }] };
   }
 }
 
@@ -177,6 +193,7 @@ describe("compile", () => {
     const result = await compile(recording, "repeat for every video", { model, loadScreenshot });
     expect(result.rounds).toBe(2);
     expect(result.problems).toEqual([]);
+    expect(result.corrections).toEqual([['step w3.3 (click): fromStep "s99" is not a recorded step']]);
     const second = model.calls[1];
     expect(second).toHaveLength(3);
     // The first answer goes back exactly as returned (thinking blocks included), then the problems.
@@ -196,6 +213,14 @@ describe("compile", () => {
     expect(model.calls[1][2].content).toContain('extractList "videos" found no items on the live page with itemSelector ".playlist-item"');
     expect(result.preview?.lists[0].count).toBe(4);
     expect(result.problems).toEqual([]);
+  });
+
+  it("asks again when the answer isn't valid JSON for the schema", async () => {
+    const model = new FakeModel([`Here you go: {"name": "x"}`, goodAnswer()]);
+    const result = await compile(recording, "repeat", { model, loadScreenshot });
+    expect(result.rounds).toBe(2);
+    expect(model.calls[1][2].content).toContain("the answer did not match the schema");
+    expect(model.calls[1][2].content).toContain("summary");
   });
 
   it("gives up after two correction rounds and returns the remaining problems", async () => {

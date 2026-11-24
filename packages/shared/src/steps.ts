@@ -304,6 +304,7 @@ export function describeEffect(e: Effect): string {
   if (e.opened.length) parts.push(`opened ${e.opened.join(", ")}`);
   if (e.closed.length) parts.push(`closed ${e.closed.join(", ")}`);
   if (e.copied) parts.push("copied");
+  if (e.appeared?.length) parts.push(`showed ${e.appeared.map((t) => `"${t}"`).join(", ")}`);
   if (e.expandedChanged) parts.push("expanded/collapsed");
   if (e.focusMoved) parts.push("moved focus");
   if (burst(e.mutations, e.baselineMutations)) parts.push(`${e.mutations} DOM changes`);

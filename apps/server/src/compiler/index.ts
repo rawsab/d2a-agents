@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { type ListItem, type Recording, type Workflow, mergeEvents } from "@d2a/shared";
 import { toWorkflow } from "./convert.js";
 import { SYSTEM_PROMPT, type ScreenshotLoader, buildContext, repairMessage } from "./prompt.js";
+import * as z from "zod/v4";
 import { CompiledWorkflow } from "./schema.js";
 
 export const COMPILER_MODEL = "claude-opus-5-5";
@@ -14,7 +14,8 @@ export const SAMPLE_ITEMS = 3;
 
 export class CompileError extends Error {}
 
-export type ModelReply = { parsed: CompiledWorkflow | null; content: Anthropic.Beta.BetaContentBlockParam[] };
+/** The answer's text, plus the content blocks exactly as returned (to send back on a correction round). */
+export type ModelReply = { text: string; content: Anthropic.Beta.BetaContentBlockParam[] };
 
 export interface CompilerModel {
   send(messages: Anthropic.Beta.BetaMessageParam[]): Promise<ModelReply>;
@@ -31,7 +32,7 @@ export class ClaudeCompilerModel implements CompilerModel {
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       thinking: { type: "adaptive" },
-      output_config: { effort: "high", format: betaZodOutputFormat(CompiledWorkflow) },
+      output_config: { effort: "high" },
       cache_control: { type: "ephemeral" },
       system: SYSTEM_PROMPT,
       messages,
@@ -42,18 +43,30 @@ export class ClaudeCompilerModel implements CompilerModel {
       throw new CompileError(`Claude declined to compile this recording${category ? ` (${category})` : ""}`);
     }
     if (message.stop_reason === "max_tokens") throw new CompileError("Claude's answer was cut off before it finished");
-    // parsed_output is added by the SDK; echo the blocks back as the API sent them so thinking stays valid.
-    const content = message.content.map((block) => {
-      if (block.type !== "text") return block;
-      const { parsed_output: _parsed, ...rest } = block as typeof block & { parsed_output?: unknown };
-      return rest;
-    }) as Anthropic.Beta.BetaContentBlockParam[];
-    return { parsed: message.parsed_output, content };
+    const text = message.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
+    // Echoed back unchanged on a correction round, so thinking blocks stay valid.
+    return { text, content: message.content as Anthropic.Beta.BetaContentBlockParam[] };
   }
 }
 
 export type PreviewList = { name: string; count: number; sample: ListItem[] };
 export type PreviewResult = { lists: PreviewList[]; error?: string };
+
+/** Parses Claude's JSON answer; on failure returns problems to send back. */
+export function parseAnswer(text: string): { answer: CompiledWorkflow } | { problems: string[] } {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end < start) return { problems: ["the answer did not contain a JSON object"] };
+  let json: unknown;
+  try {
+    json = JSON.parse(text.slice(start, end + 1));
+  } catch (err) {
+    return { problems: [`the answer was not valid JSON: ${(err as Error).message}`] };
+  }
+  const parsed = CompiledWorkflow.safeParse(json);
+  if (!parsed.success) return { problems: [`the answer did not match the schema:\n${z.prettifyError(parsed.error)}`] };
+  return { answer: parsed.data };
+}
 
 export type CompileResult = {
   workflow: Workflow;
@@ -62,6 +75,8 @@ export type CompileResult = {
   /** Problems left after the last correction round; empty when the workflow is ready. */
   problems: string[];
   rounds: number;
+  /** Problems sent back to Claude in each correction round, oldest first. */
+  corrections: string[][];
 };
 
 /** Problems the live-page check found: setup failing, or lists that came back empty. */
@@ -102,19 +117,27 @@ export async function compile(
     { role: "user", content: buildContext(instruction, steps, recording.events, deps.loadScreenshot) },
   ];
 
+  const corrections: string[][] = [];
   for (let round = 1; ; round++) {
     const reply = await deps.model.send(messages);
-    if (!reply.parsed) throw new CompileError("Claude's answer didn't match the expected format");
-    const { workflow, errors } = toWorkflow(reply.parsed, { steps, recorded: recording.events }, meta);
-    let problems = errors;
-    let preview: PreviewResult | undefined;
-    if (problems.length === 0 && deps.preview) {
-      preview = await deps.preview(workflow);
-      problems = previewProblems(workflow, preview);
+    const parsed = parseAnswer(reply.text);
+    let problems: string[];
+    let result: CompileResult | undefined;
+    if ("problems" in parsed) {
+      problems = parsed.problems;
+    } else {
+      const { workflow, errors } = toWorkflow(parsed.answer, { steps, recorded: recording.events }, meta);
+      problems = errors;
+      let preview: PreviewResult | undefined;
+      if (problems.length === 0 && deps.preview) {
+        preview = await deps.preview(workflow);
+        problems = previewProblems(workflow, preview);
+      }
+      result = { workflow, compiled: parsed.answer, preview, problems, rounds: round, corrections };
     }
-    if (problems.length === 0 || round > MAX_REPAIRS) {
-      return { workflow, compiled: reply.parsed, preview, problems, rounds: round };
-    }
+    if (result && (problems.length === 0 || round > MAX_REPAIRS)) return result;
+    if (round > MAX_REPAIRS) throw new CompileError(`Claude's answer could not be read: ${problems.join("; ")}`);
+    corrections.push(problems);
     messages.push({ role: "assistant", content: reply.content }, { role: "user", content: repairMessage(problems) });
   }
 }

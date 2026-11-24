@@ -29,13 +29,13 @@ function recordedTarget(step: SemanticStep): Fingerprint | undefined {
 
 function resolveTarget(ref: TargetRef, where: string, loopItem: string | undefined, ctx: Ctx): Target | undefined {
   let fingerprint: Fingerprint | undefined;
-  if (ref.fromStep !== null) {
+  if (ref.fromStep != null) {
     const step = ctx.steps.get(ref.fromStep);
     if (!step) {
       ctx.errors.push(`${where}: fromStep "${ref.fromStep}" is not a recorded step`);
       return undefined;
     }
-    if (ref.inventoryIndex !== null) {
+    if (ref.inventoryIndex != null) {
       const inventory = inventoryOf(step, ctx.recorded);
       const item = inventory?.[ref.inventoryIndex];
       if (!item) {
@@ -82,7 +82,7 @@ function checkTemplate(template: string, where: string, scope: Scope, ctx: Ctx) 
   }
 }
 
-function need<T>(value: T | null, field: string, where: string, ctx: Ctx): T | undefined {
+function need<T>(value: T | null | undefined, field: string, where: string, ctx: Ctx): T | undefined {
   if (value === null || value === undefined || value === "") {
     ctx.errors.push(`${where}: "${field}" is required`);
     return undefined;
@@ -105,11 +105,11 @@ function convertStep(s: InnerStep | TopStep, scope: Scope, loopItem: string | un
   const where = `step ${s.id} (${s.kind})`;
   const base = { id: s.id, ...(s.tab && s.kind !== "switchTab" ? { tab: s.tab } : {}) };
   if (s.tab && !ctx.tabs.has(s.tab)) ctx.errors.push(`${where}: tab "${s.tab}" is not declared in tabs`);
-  const target = (ref: TargetRef | null, field = "target") => {
+  const target = (ref: TargetRef | null | undefined, field = "target") => {
     const r = need(ref, field, where, ctx);
     return r && resolveTarget(r, where, loopItem, ctx);
   };
-  const template = (value: string | null, field: string) => {
+  const template = (value: string | null | undefined, field: string) => {
     const v = need(value, field, where, ctx);
     if (v !== undefined) checkTemplate(v, where, scope, ctx);
     return v;
@@ -199,6 +199,27 @@ function convertStep(s: InnerStep | TopStep, scope: Scope, loopItem: string | un
   }
 }
 
+/**
+ * A click that opened or revealed something in the recording, followed by a step on an element in
+ * the same tab, gets `until: <that element>`, so the runner retries it if the page ignored it
+ * (common while a page is still loading). Done here, deterministically, rather than relying on
+ * the model to add it.
+ */
+function addClickRetries(compiled: (InnerStep | TopStep)[], converted: Step[], ctx: Ctx) {
+  compiled.forEach((source, i) => {
+    const step = converted[i];
+    const next = converted[i + 1];
+    if (step?.kind === "forEach" && source.kind === "forEach") addClickRetries((source as TopStep).body ?? [], step.body, ctx);
+    if (step?.kind !== "click" || step.until || !next) return;
+    const recordedId = source.basedOn[0] ?? source.target?.fromStep;
+    const effect = recordedId ? ctx.steps.get(recordedId)?.effect : undefined;
+    if (!effect || !(effect.opened.length || effect.expandedChanged)) return;
+    if ((next.tab ?? step.tab) !== step.tab || next.kind === "switchTab" || next.kind === "navigate") return;
+    const target = "target" in next ? next.target : undefined;
+    if (target) step.until = { target };
+  });
+}
+
 export type ConvertResult = { workflow: Workflow; errors: string[] };
 
 /** Turns Claude's output into a Workflow, collecting every problem so one repair round can fix them all. */
@@ -228,8 +249,11 @@ export function toWorkflow(
     if (s.kind === "forEach") (s as TopStep).body?.forEach(walk);
   };
   compiled.steps.forEach(walk);
-  const steps = compiled.steps.map((s) => convertStep(s, scope, undefined, ctx)).filter((s): s is Step => s !== undefined);
+  const converted = compiled.steps.map((s) => convertStep(s, scope, undefined, ctx));
+  const steps = converted.filter((s): s is Step => s !== undefined);
   if (steps.length === 0) ctx.errors.push("the workflow has no steps");
+  // Positions only line up when every step converted; with errors the workflow goes back for repair anyway.
+  if (ctx.errors.length === 0) addClickRetries(compiled.steps, steps, ctx);
   return {
     workflow: { id: meta.id, name: compiled.name, recordingId: meta.recordingId, instruction: meta.instruction, tabs, steps },
     errors: ctx.errors,

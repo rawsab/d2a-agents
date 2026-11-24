@@ -40,6 +40,8 @@ export const Effect = z.object({
   opened: z.array(z.string()),
   closed: z.array(z.string()),
   copied: z.boolean(),
+  /** Text that appeared on the page (e.g. a status message), first few snippets. Absent in older recordings. */
+  appeared: z.array(z.string()).optional(),
   /** The page unloaded before the window ended (the action navigated). */
   unloaded: z.boolean(),
 });
