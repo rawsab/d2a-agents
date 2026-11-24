@@ -84,5 +84,44 @@ export const Workflow = z.object({
   /** Tab roles and the URL each should start on if not already open. */
   tabs: z.record(z.object({ startUrl: z.string().optional() })),
   steps: z.array(Step),
+  /** What the compiler reported alongside the workflow, for review. */
+  notes: z
+    .object({
+      summary: z.string(),
+      excludedSteps: z.array(z.object({ step: z.string(), reason: z.string() })),
+      assumptions: z.array(z.string()),
+      questions: z.array(z.string()),
+      /** Unresolved problems; the workflow likely won't run until they're fixed. */
+      problems: z.array(z.string()),
+    })
+    .optional(),
 });
 export type Workflow = z.infer<typeof Workflow>;
+
+/** One-line, plain-language description of a workflow step. */
+export function describeWorkflowStep(step: Step): string {
+  switch (step.kind) {
+    case "navigate":
+      return `go to ${step.url}`;
+    case "switchTab":
+      return `switch to ${step.role} tab`;
+    case "click":
+      return `click ${step.target.description}`;
+    case "fill":
+      return `fill ${step.target.description} with ${step.value}`;
+    case "press":
+      return `press ${step.key}`;
+    case "waitFor":
+      return `wait for ${step.target?.description ?? step.urlMatches ?? "condition"}`;
+    case "extract":
+      return `read ${step.name} from ${step.target.description}`;
+    case "extractList":
+      return `collect ${step.name} (${step.itemSelector})`;
+    case "copyFromClipboard":
+      return `take copied value as ${step.name}`;
+    case "forEach":
+      return `for each ${step.as} in ${step.list}`;
+    case "assert":
+      return `check ${step.condition}`;
+  }
+}

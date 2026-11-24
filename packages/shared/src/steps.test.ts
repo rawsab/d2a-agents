@@ -102,16 +102,19 @@ describe("noise annotation", () => {
       rec([
         { id: "a", type: "click", tabId: 1, url: YT, ts: 0, target: blank },
         fx("a", 750, {}),
-        { id: "b", type: "click", tabId: 1, url: YT, ts: 1000, target: heading },
+        { id: "b", type: "click", tabId: 1, url: YT, ts: 1000, target: dlBtn }, // a real button that did nothing
         fx("b", 1750, { mutations: 2, baselineMutations: 2 }),
+        { id: "h", type: "click", tabId: 1, url: YT, ts: 1500, target: heading },
+        fx("h", 1900, {}),
         { id: "c", type: "click", tabId: 1, url: YT, ts: 2000, target: share },
         fx("c", 2750, { opened: [dialog], mutations: 12 }),
       ]),
     );
-    expect(steps.map((s) => s.noise?.rule)).toEqual(["no-effect", "no-effect", undefined]);
+    expect(steps.map((s) => s.noise?.rule)).toEqual(["no-effect", "no-effect", "no-effect", undefined]);
     expect(steps[0].noise?.confidence).toBeGreaterThan(steps[1].noise!.confidence);
-    expect(steps[2].effect?.opened).toEqual([dialog]);
-    expect(steps[2].events).toEqual([4, 5]);
+    expect(steps[2].noise?.confidence).toBe(steps[0].noise?.confidence); // headings aren't interactive either
+    expect(steps[3].effect?.opened).toEqual([dialog]);
+    expect(steps[3].events).toEqual([6, 7]);
   });
 
   it("counts a single change on a quiet page as an effect", () => {

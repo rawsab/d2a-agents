@@ -3,7 +3,10 @@ import {
   type Recording,
   type RunSnapshot,
   type SemanticStep,
+  type Step,
+  type Workflow,
   describeEffect,
+  describeWorkflowStep,
   describeStep,
   mergeEvents,
 } from "@d2a/shared";
@@ -110,10 +113,87 @@ async function loadLibrary() {
   }
 }
 
+type CompileResponse = {
+  workflow: Workflow;
+  preview: { lists: { name: string; count: number; sample: Record<string, unknown>[] }[]; error?: string } | null;
+  checkedOnLivePage: boolean;
+  error?: string;
+};
+
+function renderPlan(list: HTMLOListElement, steps: Step[]) {
+  list.replaceChildren();
+  for (const step of steps) {
+    const li = el("li", undefined, describeWorkflowStep(step));
+    if (step.kind === "forEach") {
+      const body = el("ol");
+      renderPlan(body, step.body);
+      li.append(body);
+    }
+    list.append(li);
+  }
+}
+
+function renderCompiled(res: CompileResponse) {
+  const { workflow, preview } = res;
+  const notes = workflow.notes;
+  $("compiled").hidden = false;
+  $("compiled-summary").textContent = notes?.summary ?? workflow.name;
+  renderPlan($<HTMLOListElement>("compiled-steps"), workflow.steps);
+  const list = $<HTMLUListElement>("compiled-notes");
+  list.replaceChildren();
+  const note = (cls: string, text: string) => list.append(el("li", cls, text));
+  for (const p of notes?.problems ?? []) note("problem", `Problem: ${p}`);
+  for (const q of notes?.questions ?? []) note("question", `Question: ${q}`);
+  for (const a of notes?.assumptions ?? []) note("", `Assumed: ${a}`);
+  for (const x of notes?.excludedSteps ?? []) note("muted", `Left out ${x.step}: ${x.reason}`);
+  for (const l of preview?.lists ?? []) {
+    const first = l.sample[0];
+    const example = first ? Object.entries(first).find(([k, v]) => !k.startsWith("_") && v)?.[1] : undefined;
+    note("", `Found ${l.count} ${l.name} on the live page${example ? `, e.g. "${String(example).slice(0, 60)}"` : ""}`);
+  }
+  if (!res.checkedOnLivePage) note("muted", "Not checked on the live page (browser busy or disconnected).");
+  $<HTMLButtonElement>("compiled-dry").onclick = () => startRun(workflow.id, { limit: 1 });
+  $<HTMLButtonElement>("compiled-run").onclick = () => startRun(workflow.id, {});
+}
+
+async function compileRecording(id: string) {
+  const instruction = $<HTMLTextAreaElement>("instruction").value.trim();
+  if (!instruction) return $<HTMLTextAreaElement>("instruction").focus();
+  const button = $<HTMLButtonElement>("compile");
+  const status = $("compile-status");
+  button.disabled = true;
+  $("compiled").hidden = true;
+  status.textContent = "Claude is building the automation; this can take a minute or two…";
+  try {
+    const res = await fetch(`${API}/recordings/${id}/compile`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ instruction }),
+    });
+    const body = (await res.json()) as CompileResponse;
+    if (!res.ok) {
+      status.textContent = `Could not automate: ${body.error}`;
+      return;
+    }
+    status.textContent = "";
+    renderCompiled(body);
+    loadWorkflows();
+  } catch (err) {
+    status.textContent = `Could not reach the server: ${(err as Error).message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function openRecording(id: string) {
   const rec = (await (await fetch(`${API}/recordings/${id}`)).json()) as Recording;
+  if (openRecordingId !== id) {
+    $("compiled").hidden = true;
+    $("compile-status").textContent = "";
+  }
   openRecordingId = id;
   $("detail-name").textContent = rec.name;
+  $<HTMLButtonElement>("compile").onclick = () => compileRecording(id);
   const decide: OnDecide = async (eventIndex, noise) => {
     await fetch(`${API}/recordings/${id}/overrides/${eventIndex}`, {
       method: "PUT",

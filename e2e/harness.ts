@@ -30,14 +30,14 @@ export async function until<T>(fn: () => Promise<T | undefined | false>, what: s
 }
 
 /** Starts an isolated server (temp DB) and Chromium with the unpacked extension loaded. */
-export async function launch() {
+export async function launch(serverEnv: Record<string, string> = {}) {
   if (await health()) {
     throw new Error(`e2e port ${E2E_PORT} is in use; is another test run still going?`);
   }
   const tmp = await mkdtemp(join(tmpdir(), "d2a-e2e-"));
   const server: ChildProcess = spawn("npx", ["tsx", "apps/server/src/index.ts"], {
     cwd: ROOT,
-    env: { ...process.env, D2A_DB: join(tmp, "test.db"), D2A_PORT: String(E2E_PORT) },
+    env: { ...process.env, ...serverEnv, D2A_DB: join(tmp, "test.db"), D2A_PORT: String(E2E_PORT) },
     stdio: "ignore",
     detached: true, // own process group, so close() also stops the server npx spawned
   });

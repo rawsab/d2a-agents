@@ -60,6 +60,21 @@
         <button id="delete" class="ghost danger">Delete</button>
       </div>
       <h2 id="detail-name"></h2>
+      <div class="automate">
+        <textarea id="instruction" rows="2" placeholder="What should be repeated? e.g. Repeat for every video in the playlist"></textarea>
+        <button id="compile" class="primary">Automate</button>
+        <p id="compile-status" class="hint"></p>
+        <div id="compiled" hidden>
+          <p id="compiled-summary"></p>
+          <ol id="compiled-steps" class="plan"></ol>
+          <ul id="compiled-notes" class="notes"></ul>
+          <div class="row">
+            <button id="compiled-dry">Dry run (1 item)</button>
+            <button id="compiled-run" class="primary">Run all</button>
+          </div>
+        </div>
+      </div>
+      <h2>Recorded steps</h2>
       <ol id="detail-steps" class="steps"></ol>
     </section>
 

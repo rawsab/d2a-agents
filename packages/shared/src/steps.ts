@@ -179,6 +179,10 @@ function mergeRaw(recorded: RecordedEvent[]): SemanticStep[] {
 }
 
 const REPEAT_CLICK_MS = 600;
+const INTERACTIVE_ROLES = new Set([
+  "button", "link", "textbox", "searchbox", "combobox", "listbox", "option", "checkbox", "radio", "switch",
+  "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "slider", "spinbutton", "treeitem",
+]);
 
 /**
  * Activity after an action counts as caused by it if the page was quiet before (any change),
@@ -227,7 +231,7 @@ function annotateNoise(steps: SemanticStep[], recorded: RecordedEvent[]) {
         steps.some((o) => o.kind === "openTab" && o.openedBy === s.id) ||
         (s.effect !== undefined && hadEffect(s.effect));
       if (s.effect && !effective) {
-        if (s.target.role) flag(s, "no-effect", "click had no visible effect", 0.7);
+        if (s.target.role && INTERACTIVE_ROLES.has(s.target.role)) flag(s, "no-effect", "click had no visible effect", 0.7);
         else flag(s, "no-effect", "clicked a non-interactive area; nothing happened", 0.85);
       }
       if (prev?.kind === "click" && sameTarget(prev.target, s.target) && s.ts - prev.ts < REPEAT_CLICK_MS) {

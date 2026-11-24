@@ -11,6 +11,7 @@ import type {
   Target,
   Workflow,
 } from "@d2a/shared";
+import { describeWorkflowStep } from "@d2a/shared";
 import { render } from "./template.js";
 
 export interface CommandExecutor {
@@ -27,33 +28,6 @@ const MAX_LOG = 500;
 class StopRequested extends Error {}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function describe(step: Step): string {
-  switch (step.kind) {
-    case "navigate":
-      return `go to ${step.url}`;
-    case "switchTab":
-      return `switch to ${step.role} tab`;
-    case "click":
-      return `click ${step.target.description}`;
-    case "fill":
-      return `fill ${step.target.description} with ${step.value}`;
-    case "press":
-      return `press ${step.key}`;
-    case "waitFor":
-      return `wait for ${step.target?.description ?? step.urlMatches ?? "condition"}`;
-    case "extract":
-      return `read ${step.name} from ${step.target.description}`;
-    case "extractList":
-      return `collect ${step.name} (${step.itemSelector})`;
-    case "copyFromClipboard":
-      return `take copied value as ${step.name}`;
-    case "forEach":
-      return `for each ${step.as} in ${step.list}`;
-    case "assert":
-      return `check ${step.condition}`;
-  }
-}
 
 /** Interprets a workflow, step by step, against the browser. One instance per run. */
 export class Runner {
@@ -107,6 +81,28 @@ export class Runner {
       this.update();
     }
     return this.snapshot;
+  }
+
+  /**
+   * Runs only the steps before the first forEach (opening tabs, collecting lists) and reports what
+   * the lists contain. Used to check a freshly compiled workflow against the live page.
+   */
+  async preview(sampleSize: number): Promise<{ lists: { name: string; count: number; sample: ListItem[] }[]; error?: string }> {
+    let error: string | undefined;
+    try {
+      for (const step of this.workflow.steps) {
+        if (step.kind === "forEach") break;
+        await this.step(step);
+      }
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      for (const tabId of this.tabs.values()) await this.exec({ op: "release", tabId }).catch(() => {});
+    }
+    const lists = Object.entries(this.vars)
+      .filter((entry): entry is [string, ListItem[]] => Array.isArray(entry[1]))
+      .map(([name, items]) => ({ name, count: items.length, sample: items.slice(0, sampleSize) }));
+    return { lists, error };
   }
 
   pause() {
@@ -202,7 +198,7 @@ export class Runner {
 
   private async step(step: Step): Promise<void> {
     await this.gate();
-    if (step.kind !== "forEach") this.log("info", describe(step), step.id);
+    if (step.kind !== "forEach") this.log("info", describeWorkflowStep(step), step.id);
 
     switch (step.kind) {
       case "switchTab":
@@ -315,7 +311,7 @@ export class Runner {
     const label = (it: ListItem, i: number) =>
       String(Object.entries(it).find(([k, v]) => !k.startsWith("_") && typeof v === "string" && v)?.[1] ?? `#${i + 1}`).slice(0, 80);
     this.snapshot.items = items.map((it, i) => ({ index: i, label: label(it, i), status: "pending" }));
-    this.log("info", `${describe(step)}: ${items.length} of ${list.length}`, step.id);
+    this.log("info", `${describeWorkflowStep(step)}: ${items.length} of ${list.length}`, step.id);
 
     for (const [i, item] of items.entries()) {
       await this.gate();

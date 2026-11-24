@@ -35,6 +35,13 @@ export class RunManager {
     return runner.snapshot;
   }
 
+  /** Checks a workflow's setup steps against the live page (no forEach body runs). */
+  async preview(workflow: Workflow, sampleSize: number) {
+    if (this.active) throw new Error("another run is in progress");
+    const runner = new Runner(randomUUID(), workflow, this.browser, RunOptions.parse({}), () => {});
+    return runner.preview(sampleSize);
+  }
+
   control(id: string, action: "pause" | "resume" | "stop"): boolean {
     if (this.active?.snapshot.id !== id) return false;
     this.active[action]();
