@@ -84,6 +84,8 @@ export const Workflow = z.object({
   /** Tab roles and the URL each should start on if not already open. */
   tabs: z.record(z.object({ startUrl: z.string().optional() })),
   steps: z.array(Step),
+  /** Close tabs that pages open on other sites (ads, pop-unders) as soon as they appear. */
+  closePopups: z.boolean().optional(),
   /** What the compiler reported alongside the workflow, for review. */
   notes: z
     .object({

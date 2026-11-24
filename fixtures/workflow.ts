@@ -84,7 +84,6 @@ export function youtubeWorkflow(playlistUrl: string, downloaderUrl: string): Wor
         body: [
           { id: "s4.1", kind: "switchTab", role: "yt" },
           { id: "s4.2", kind: "navigate", url: "{{video.url}}" },
-          { id: "s4.3", kind: "waitFor", target: share, timeoutMs: 20_000 },
           // YouTube renders Share before its click handler is attached; `until` retries the click.
           { id: "s4.4", kind: "click", target: share, until: { target: copy } },
           { id: "s4.5", kind: "click", target: copy },

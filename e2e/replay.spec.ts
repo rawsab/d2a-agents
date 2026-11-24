@@ -35,6 +35,12 @@ test("a click the page ignores (still loading) is retried until its expected res
   expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
 });
 
+test("actions wait for their element when the page renders it after loading", async () => {
+  const run = await runWorkflow(fixtureWorkflow(fixture.origin, "?hidden=2000"), { delayMs: 0 });
+  expect(run.status).toBe("done");
+  expect(fixture.log).toEqual(shareUrls([1, 2, 3, 4]));
+});
+
 test("a dry run only does the first item", async () => {
   const run = await runWorkflow(fixtureWorkflow(fixture.origin), { limit: 1 });
   expect(run.status).toBe("done");

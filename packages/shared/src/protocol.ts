@@ -33,6 +33,11 @@ export const Command = z.discriminatedUnion("op", [
   z.object({ op: z.literal("lastCopied"), ...tab }),
   /** Waits for the page to finish whatever the last action started. */
   z.object({ op: z.literal("settle"), ...tab }),
+  /**
+   * While enabled, tabs that pages open (they have an opener) on an origin not in allowedOrigins
+   * are closed as soon as their URL is known, and the opener is re-activated.
+   */
+  z.object({ op: z.literal("setPopupPolicy"), enabled: z.boolean(), allowedOrigins: z.array(z.string()) }),
   /** Detaches the debugger from the tab. */
   z.object({ op: z.literal("release"), ...tab }),
   z.object({ op: z.literal("snapshot"), ...tab }),
@@ -56,7 +61,9 @@ export type CommandResults = {
   extract: string;
   extractList: ListItem[];
   lastCopied: { value: string; ts: number } | null;
-  settle: null;
+  /** Hosts of popup tabs closed since the previous settle. */
+  settle: { closedPopups: string[] };
+  setPopupPolicy: null;
   release: null;
   snapshot: PageInventory;
 };

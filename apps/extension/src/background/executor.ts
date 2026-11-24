@@ -32,11 +32,36 @@ async function waitForLoad(tabId: number) {
  */
 export class Executor {
   private attached = new Set<number>();
+  private popupPolicy: { allowedOrigins: Set<string> } | undefined;
+  /** Popup tabs whose URL isn't known yet, mapped to their opener. */
+  private pendingPopups = new Map<number, number>();
+  private closedPopups: string[] = [];
 
   constructor() {
     chrome.debugger.onDetach.addListener(({ tabId }) => {
       if (tabId !== undefined) this.attached.delete(tabId);
     });
+    chrome.tabs.onCreated.addListener((tab) => {
+      // Only tabs a page opened (window.open, target=_blank) have an opener; ours from openTab don't.
+      if (!this.popupPolicy || tab.id === undefined || tab.openerTabId === undefined) return;
+      this.pendingPopups.set(tab.id, tab.openerTabId);
+      this.checkPopup(tab.id, tab.pendingUrl ?? tab.url);
+    });
+    chrome.tabs.onUpdated.addListener((tabId, info) => {
+      if (info.url && this.pendingPopups.has(tabId)) this.checkPopup(tabId, info.url);
+    });
+    chrome.tabs.onRemoved.addListener((tabId) => this.pendingPopups.delete(tabId));
+  }
+
+  private checkPopup(tabId: number, url: string | undefined) {
+    const opener = this.pendingPopups.get(tabId);
+    if (!this.popupPolicy || opener === undefined || !url || !/^https?:/.test(url)) return; // wait for a real URL
+    this.pendingPopups.delete(tabId);
+    const { origin, host } = new URL(url);
+    if (this.popupPolicy.allowedOrigins.has(origin)) return;
+    this.closedPopups.push(host);
+    chrome.tabs.remove(tabId).catch(() => {});
+    chrome.tabs.update(opener, { active: true }).catch(() => {});
   }
 
   async run(cmd: Command): Promise<CommandResults[Command["op"]]> {
@@ -86,9 +111,15 @@ export class Executor {
         });
       case "lastCopied":
         return this.content(cmd.tabId, { type: "exec/lastCopied" });
-      case "settle":
+      case "settle": {
         await sleep(SETTLE_MS);
         await waitForLoad(cmd.tabId);
+        return { closedPopups: this.closedPopups.splice(0) };
+      }
+      case "setPopupPolicy":
+        this.popupPolicy = cmd.enabled ? { allowedOrigins: new Set(cmd.allowedOrigins) } : undefined;
+        this.pendingPopups.clear();
+        this.closedPopups = [];
         return null;
       case "release":
         if (this.attached.has(cmd.tabId)) await chrome.debugger.detach({ tabId: cmd.tabId }).catch(() => {});

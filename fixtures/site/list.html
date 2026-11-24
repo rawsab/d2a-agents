@@ -28,8 +28,16 @@
     <script>
       const dialog = document.getElementById("share-dialog");
       const shareUrl = document.getElementById("share-url");
+      const params = new URLSearchParams(location.search);
+      // ?hidden=<ms> keeps the playlist invisible for a while, like content rendered after load.
+      const hidden = Number(params.get("hidden") ?? 0);
+      if (hidden) {
+        const playlist = document.getElementById("playlist");
+        playlist.style.display = "none";
+        setTimeout(() => (playlist.style.display = ""), hidden);
+      }
       // ?slow=<ms> mimics sites that render buttons before their click handlers are attached.
-      const slow = Number(new URLSearchParams(location.search).get("slow") ?? 0);
+      const slow = Number(params.get("slow") ?? 0);
       const hydrate = () => {
         for (const btn of document.querySelectorAll(".share")) btn.addEventListener("click", () => {
           // Like youtu.be links, the share URL differs from the item's href.

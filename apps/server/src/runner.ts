@@ -22,6 +22,8 @@ const WAIT_TIMEOUT_MS = 10_000;
 const CLIPBOARD_TIMEOUT_MS = 5_000;
 const POLL_MS = 200;
 const CLICK_ATTEMPTS = 3;
+/** Actions wait this long for their element to appear (pages render after "load"). */
+const ACTION_WAIT_MS = 15_000;
 const CLICK_EFFECT_TIMEOUT_MS = 3_000;
 const MAX_LOG = 500;
 
@@ -62,6 +64,10 @@ export class Runner {
 
   async start(): Promise<RunSnapshot> {
     try {
+      if (this.workflow.closePopups) {
+        const allowedOrigins = Object.values(this.workflow.tabs).flatMap((t) => (t.startUrl ? [new URL(t.startUrl).origin] : []));
+        await this.exec({ op: "setPopupPolicy", enabled: true, allowedOrigins });
+      }
       for (const step of this.workflow.steps) await this.step(step);
       this.snapshot.status = "done";
       const failed = this.snapshot.items.filter((i) => i.status === "failed").length;
@@ -76,6 +82,7 @@ export class Runner {
         this.log("error", `Failed: ${this.snapshot.error}`);
       }
     } finally {
+      if (this.workflow.closePopups) await this.exec({ op: "setPopupPolicy", enabled: false, allowedOrigins: [] }).catch(() => {});
       for (const tabId of this.tabs.values()) await this.exec({ op: "release", tabId }).catch(() => {});
       this.snapshot.finishedAt = Date.now();
       this.update();
@@ -193,7 +200,8 @@ export class Runner {
   private async act(tabId: number, command: Command) {
     this.lastActionAt = Date.now();
     await this.browser.execute(command);
-    await this.exec({ op: "settle", tabId });
+    const { closedPopups } = await this.exec({ op: "settle", tabId });
+    for (const host of closedPopups) this.log("info", `closed a tab the page opened (${host})`);
   }
 
   private async step(step: Step): Promise<void> {
@@ -210,7 +218,10 @@ export class Runner {
       }
       case "click": {
         const tabId = await this.tabFor(step);
-        const click = () => this.act(tabId, { op: "click", tabId, locator: this.locator(step.target) });
+        const click = async () => {
+          await this.waitForTarget(tabId, step.target);
+          await this.act(tabId, { op: "click", tabId, locator: this.locator(step.target) });
+        };
         if (!step.until) return click();
         let detail = "";
         for (let attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++) {
@@ -226,10 +237,12 @@ export class Runner {
       }
       case "fill": {
         const tabId = await this.tabFor(step);
+        await this.waitForTarget(tabId, step.target);
         return this.act(tabId, { op: "fill", tabId, locator: this.locator(step.target), value: this.render(step.value) });
       }
       case "press": {
         const tabId = await this.tabFor(step);
+        if (step.target) await this.waitForTarget(tabId, step.target);
         return this.act(tabId, { op: "press", tabId, key: step.key, locator: step.target && this.locator(step.target) });
       }
       case "waitFor": {
@@ -247,6 +260,7 @@ export class Runner {
       }
       case "extract": {
         const tabId = await this.tabFor(step);
+        await this.waitForTarget(tabId, step.target);
         this.vars[step.name] = await this.exec({ op: "extract", tabId, locator: this.locator(step.target), attr: step.attr });
         return;
       }
@@ -266,6 +280,12 @@ export class Runner {
       case "forEach":
         return this.forEach(step);
     }
+  }
+
+  /** Waits for an element an action needs; fails with why it wasn't found. */
+  private async waitForTarget(tabId: number, target: Target) {
+    const result = await this.waitUntil(tabId, { target }, ACTION_WAIT_MS);
+    if (!result.met) throw new Error(`${result.detail} (waited ${ACTION_WAIT_MS / 1000}s)`);
   }
 
   /** Evaluates a condition once. */
